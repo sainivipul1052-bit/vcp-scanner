@@ -2,9 +2,9 @@ name: Weekly VCP Stock Screener
 
 on:
   schedule:
-    # Runs every Monday at 01:00 UTC (6:30 AM IST)
-    - cron: '0 1 * * 1'
-  workflow_dispatch: # Allows manual trigger from website anytime
+    # Runs every Monday to Friday at 10:30 UTC (4:00 PM IST, right after NSE market close)
+    - cron: '30 10 * * 1-5'
+  workflow_dispatch:
 
 jobs:
   run-scanner:
@@ -23,13 +23,13 @@ jobs:
           python -m pip install --upgrade pip
           pip install pandas numpy yfinance
 
-      - name: Run VCP Screener Script
+      - name: Run VCP Screener & Portfolio Tracker
         run: python scanner.py
 
-      - name: Commit and push changes to CSV
+      - name: Commit and push all 3 CSV files
         run: |
           git config --global user.name 'GitHub Actions Bot'
           git config --global user.email 'actions@github.com'
-          git add best_stocks.csv
-          git diff --quiet && git diff --staged --quiet || (git commit -m "Update weekly VCP best stocks CSV [skip ci]" && git push)
+          git add best_stocks.csv trade_log.csv portfolio_summary.csv
+          git diff --quiet && git diff --staged --quiet || (git commit -m "Update VCP Watchlist, Trade Log & Portfolio Summary [skip ci]" && git push)
           
