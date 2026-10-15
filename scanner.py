@@ -4,7 +4,11 @@ import numpy as np
 import yfinance as yf
 from datetime import datetime
 
-print("Running Manas Arora VCP Portfolio Tracker, Trade Logger & Live Scanner...")
+print("Running Manas Arora VCP Live Forward Tracker (Starting Fresh from ₹50,000)...")
+
+# LIVE FORWARD-TEST START DATE (Ignores all historical backtest trades before this date!)
+LIVE_START_DATE = "2026-10-16"
+INITIAL_CAPITAL = 50000.0
 
 # 1. Fetch NSE Midcap 150 & Smallcap 250 Universe
 req = lambda u: urllib.request.Request(u, headers={'User-Agent': 'Mozilla/5.0'})
@@ -12,12 +16,11 @@ mid = pd.read_csv(urllib.request.urlopen(req('https://nsearchives.nseindia.com/c
 sml = pd.read_csv(urllib.request.urlopen(req('https://nsearchives.nseindia.com/content/indices/ind_niftysmallcap250list.csv')))
 tickers = [x + '.NS' for x in list(set(mid['Symbol'].dropna().tolist() + sml['Symbol'].dropna().tolist())) if 'DUMMY' not in str(x)]
 
-print(f"Fetched {len(tickers)} stocks. Downloading 1Y daily data...")
+print(f"Fetched {len(tickers)} stocks. Downloading daily data for indicator calculations...")
 d = yf.download(tickers, period='1y', interval='1d', group_by='ticker', auto_adjust=True, threads=True)
 dates = d.index
 
-# 2. Run Continuous Portfolio Simulation (₹50,000 Capital)
-INITIAL_CAPITAL = 50000.0
+# 2. Run Forward Simulation ONLY on or after LIVE_START_DATE
 cash = INITIAL_CAPITAL
 pos = []
 trd = []
@@ -26,8 +29,11 @@ cooldown = {}
 
 for i in range(65, len(dates)):
     cd = dates[i]
-    
-    # --- A. Manage Open Positions (SL, Breakeven, Scale-Out, Targets) ---
+    # Skip all past backtest dates prior to live start date!
+    if str(cd)[:10] < LIVE_START_DATE:
+        continue
+
+    # --- A. Manage Live Open Positions ---
     for p in pos[:]:
         tk = p['tk']
         dt = d[tk]
@@ -42,7 +48,7 @@ for i in range(65, len(dates)):
         s20 = float(hist['Close'].tail(20).mean())
         p['days'] += 1
 
-        # 1. Check Stop Loss Hit
+        # 1. Stop Loss Hit
         if lo <= p['sl']:
             ep = round(p['sl'], 2)
             pnl = (ep - p['ep']) * p['sh']
@@ -148,7 +154,7 @@ for i in range(65, len(dates)):
                 p['sl'] = new_sl
                 p['st_type'] = 'LOCK_+12%_SL'
 
-    # --- B. Scan for New Day-1 Strong Start Entries ---
+    # --- B. Scan for New Live Day-1 Strong Start Entries ---
     if len(pos) < 4 and cash > 8000:
         day_cands = []
         for tk in tickers:
@@ -219,7 +225,7 @@ for i in range(65, len(dates)):
                 'days': 0, 'max_g': (float(d[tk].loc[cd, 'High']) / ep) - 1, 'st_type': 'INIT_SL'
             })
 
-    # Track Daily Equity
+    # Track Daily Live Equity
     op_val = sum([p['sh'] * float(d[p['tk']].loc[cd, 'Close']) for p in pos if cd in d[p['tk']].index and not pd.isna(d[p['tk']].loc[cd, 'Close'])])
     tot_eq = round(cash + op_val, 2)
     eq.append({
@@ -233,7 +239,7 @@ for i in range(65, len(dates)):
         'Open_Trades_Count': len(pos)
     })
 
-# 3. Add Currently Open Positions to the Top of trade_log.csv
+# 3. Save Live Trade Log (trade_log.csv)
 open_rows = []
 for p in pos:
     curr_px = round(float(d[p['tk']].dropna()['Close'].iloc[-1]), 2)
@@ -246,10 +252,17 @@ for p in pos:
         'Shares': p['sh'], 'PnL_Rs': unrl_pnl, 'PnL_%': unrl_pct
     })
 
-trade_log_df = pd.DataFrame(open_rows + trd[::-1])
+all_rows = open_rows + trd[::-1]
+if all_rows:
+    trade_log_df = pd.DataFrame(all_rows)
+else:
+    trade_log_df = pd.DataFrame(columns=[
+        'Status', 'Stock', 'Exit_Reason', 'Buy_Date', 'Sell_Date', 'Days_Held',
+        'Entry_Px', 'Exit_or_CMP', 'Current_SL', 'Shares', 'PnL_Rs', 'PnL_%'
+    ])
 trade_log_df.to_csv('trade_log.csv', index=False)
 
-# 4. Save Portfolio Summary & Performance Metrics to portfolio_summary.csv
+# 4. Save Live Portfolio Summary (portfolio_summary.csv)
 eq_df = pd.DataFrame(eq)
 closed_df = pd.DataFrame(trd)
 win_rate = round((len(closed_df[closed_df['PnL_Rs'] >= 0]) / len(closed_df)) * 100, 1) if not closed_df.empty else 0.0
@@ -257,6 +270,7 @@ max_dd = round(((eq_df['Total_Equity'] / eq_df['Total_Equity'].cummax()) - 1).mi
 
 summary_row = pd.DataFrame([{
     'Last_Updated': datetime.now().strftime('%Y-%m-%d'),
+    'Live_Start_Date': LIVE_START_DATE,
     'Initial_Capital': INITIAL_CAPITAL,
     'Current_Total_Equity': eq_df['Total_Equity'].iloc[-1] if not eq_df.empty else INITIAL_CAPITAL,
     'Total_Net_PnL_Rs': eq_df['Net_Profit_Rs'].iloc[-1] if not eq_df.empty else 0.0,
@@ -330,7 +344,6 @@ else:
         'BE_Move_At_+8%', 'ScaleOut_36%', 'Target_48%', 'Qty_for_50k', 'Capital_Req'
     ]).to_csv('best_stocks.csv', index=False)
 
-print("\n=== PORTFOLIO SUMMARY ===")
+print("\n=== FRESH LIVE PORTFOLIO SUMMARY ===")
 print(summary_row.to_string(index=False))
-print("\n=== LATEST TRADE LOG (OPEN & CLOSED) ===")
-print(trade_log_df.head(10).to_string(index=False))
+        
