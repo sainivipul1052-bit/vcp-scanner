@@ -252,7 +252,7 @@ for i in range(75, len(dates)):
         'Net_Return_%': round(((tot_eq / INITIAL_CAPITAL) - 1) * 100, 2), 'Open_Trades_Count': len(pos)
     })
 
-# Save trade_log.csv & portfolio_summary.csv
+# Save trade_log.csv & portfolio_summary.csv (Fixed empty DataFrame syntax)
 open_rows = []
 for p in pos:
     curr_px = round(float(d[p['tk']].dropna()['Close'].iloc[-1]), 2)
@@ -266,7 +266,13 @@ for p in pos:
     })
 
 all_rows = open_rows + trd[::-1]
-pd.DataFrame(all_rows if all_rows else columns=['Status', 'Stock', 'Exit_Reason', 'Buy_Date', 'Sell_Date', 'Days_Held', 'Origin_Low', 'Entry_Px', 'Exit_or_CMP', 'Current_SL', 'Shares', 'PnL_Rs', 'PnL_%']).to_csv('trade_log.csv', index=False)
+if all_rows:
+    pd.DataFrame(all_rows).to_csv('trade_log.csv', index=False)
+else:
+    pd.DataFrame(columns=[
+        'Status', 'Stock', 'Exit_Reason', 'Buy_Date', 'Sell_Date', 'Days_Held', 
+        'Origin_Low', 'Entry_Px', 'Exit_or_CMP', 'Current_SL', 'Shares', 'PnL_Rs', 'PnL_%'
+    ]).to_csv('trade_log.csv', index=False)
 
 eq_df = pd.DataFrame(eq)
 closed_df = pd.DataFrame(trd)
@@ -313,7 +319,6 @@ for tk in tickers:
         v_ratio = round(float(vols.iloc[-1]) / v20, 2) if v20 > 0 else 9.9
         h_lows = float(lo_s.iloc[-1]) >= float(lo_s.tail(5).min())
 
-        # STRICT RISING 20 SMA & ABOVE PRICE CHECK
         if r3m >= 35 and green_dots >= 2 and days_since_peak >= 6 and 2 <= dd <= 24 and already_moved <= 12.0 and clean_pullback and (cc >= s20 and s20 > s20_10d and s20 >= s50) and rng_2d <= 4.2 and v_ratio <= 1.0 and h_lows:
             tier = "1_STRICT_UPTREND" if (rng_2d <= 3.2 and already_moved <= 10.0) else "2_UPTREND_RADAR"
             sl = round(max(float(lo_s.tail(2).min()) * 0.996, entry * 0.962), 2)
