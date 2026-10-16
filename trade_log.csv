@@ -1,1 +1,1 @@
-Status,Stock,Exit_Reason,Buy_Date,Sell_Date,Days_Held,Entry_Px,Exit_or_CMP,Current_SL,Shares,PnL_Rs,PnL_%
+Status,Stock,Exit_Reason,Buy_Date,Sell_Date,Days_Held,Origin_Low,Entry_Px,Exit_or_CMP,Current_SL,Shares,PnL_Rs,PnL_%
