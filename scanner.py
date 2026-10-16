@@ -4,9 +4,9 @@ import numpy as np
 import yfinance as yf
 from datetime import datetime
 
-print("Running Daily Manas Arora VCP Tracker (With Automatic Profit Reinvestment)...")
+print("Running Manas Arora VCP Live Tracker (True Swing-Origin Targets & Day-1 Base Filter)...")
 
-# LIVE FORWARD-TEST START DATE (Starts fresh from ₹50,000 on Oct 16, 2026)
+# LIVE FORWARD-TEST START DATE (Starts fresh from ₹50,000 without old backtest trades)
 LIVE_START_DATE = "2026-10-16"
 INITIAL_CAPITAL = 50000.0
 
@@ -20,9 +20,8 @@ print(f"Fetched {len(tickers)} stocks. Downloading 1Y daily data...")
 d = yf.download(tickers, period='1y', interval='1d', group_by='ticker', auto_adjust=True, threads=True)
 dates = d.index
 
-# 2. Run Daily Forward Simulation & Reinvest Realized Profits
+# 2. Run Forward Simulation ONLY on or after LIVE_START_DATE
 cash = INITIAL_CAPITAL
-realized_profit = 0.0
 pos = []
 trd = []
 eq = []
@@ -48,12 +47,11 @@ for i in range(75, len(dates)):
         s20 = float(hist['Close'].tail(20).mean())
         p['days'] += 1
 
-        # 1. Stop Loss Hit (Reinvests returned capital + any locked profit back into cash)
+        # 1. Stop Loss Hit
         if lo <= p['sl']:
             ep = round(p['sl'], 2)
             pnl = (ep - p['ep']) * p['sh']
             cash += p['sh'] * ep
-            realized_profit += pnl
             cooldown[tk] = i
             trd.append({
                 'Status': 'CLOSED', 'Stock': tk.replace('.NS', ''), 'Exit_Reason': p['st_type'],
@@ -69,13 +67,12 @@ for i in range(75, len(dates)):
         cg_from_entry = (hi / p['ep']) - 1
         p['max_g'] = max(p['max_g'], cg_from_entry)
 
-        # 2. Scale Out 50% at +35% from Swing Origin Low (Immediately frees profit to cash!)
+        # 2. Scale Out 50% at +35% from Swing Origin Low
         if hi >= p['scale_px'] and not p['scaled'] and p['sh'] >= 2:
             sell_sh = max(1, p['sh'] // 2)
             ep = p['scale_px']
             pnl = (ep - p['ep']) * sell_sh
             cash += sell_sh * ep
-            realized_profit += pnl
             p['sh'] -= sell_sh
             p['scaled'] = True
             p['sl'] = round(max(p['sl'], p['ep'] * 1.15, s10 * 0.985), 2)
@@ -93,7 +90,6 @@ for i in range(75, len(dates)):
             ep = p['tgt']
             pnl = (ep - p['ep']) * p['sh']
             cash += p['sh'] * ep
-            realized_profit += pnl
             cooldown[tk] = i
             trd.append({
                 'Status': 'CLOSED', 'Stock': tk.replace('.NS', ''), 'Exit_Reason': 'ORIGIN_+48%_LIMIT',
@@ -110,7 +106,6 @@ for i in range(75, len(dates)):
             ep = round(max(cl, p['sl']), 2)
             pnl = (ep - p['ep']) * p['sh']
             cash += p['sh'] * ep
-            realized_profit += pnl
             cooldown[tk] = i
             trd.append({
                 'Status': 'CLOSED', 'Stock': tk.replace('.NS', ''), 'Exit_Reason': '10SMA_TRAIL_EXIT',
@@ -127,7 +122,6 @@ for i in range(75, len(dates)):
             ep = round(max(cl, p['sl']), 2)
             pnl = (ep - p['ep']) * p['sh']
             cash += p['sh'] * ep
-            realized_profit += pnl
             cooldown[tk] = i
             trd.append({
                 'Status': 'CLOSED', 'Stock': tk.replace('.NS', ''), 'Exit_Reason': '20SMA_TRAIL_EXIT',
@@ -144,7 +138,6 @@ for i in range(75, len(dates)):
             ep = round(cl, 2)
             pnl = (ep - p['ep']) * p['sh']
             cash += p['sh'] * ep
-            realized_profit += pnl
             cooldown[tk] = i
             trd.append({
                 'Status': 'CLOSED', 'Stock': tk.replace('.NS', ''), 'Exit_Reason': 'TIME_STOP_18D',
@@ -167,8 +160,8 @@ for i in range(75, len(dates)):
                 p['sl'] = new_sl
                 p['st_type'] = 'LOCK_+12%_SL'
 
-    # --- B. Daily Scan for New Day-1 Strong Start Entries (<=12% from Swing Origin Low) ---
-    if len(pos) < 4 and cash > 5000:
+    # --- B. Scan for New Day-1 Strong Start Entries (<=12% from Swing Origin Low) ---
+    if len(pos) < 4 and cash > 8000:
         day_cands = []
         for tk in tickers:
             if any(p['tk'] == tk for p in pos):
@@ -233,13 +226,11 @@ for i in range(75, len(dates)):
 
         day_cands.sort(key=lambda x: x[0], reverse=True)
         for score, tk, ep, sl, orig, sc_px, tg_px in day_cands:
-            if len(pos) >= 4 or cash < 5000:
+            if len(pos) >= 4 or cash < 8000:
                 break
             rps = ep - sl
-            # COMPOUNDING POSITION SIZING: Uses current Total Equity (Initial Capital + Reinvested Profits!)
-            op_val_now = sum([p['sh'] * float(d[p['tk']].loc[cd, 'Close']) for p in pos if cd in d[p['tk']].index and not pd.isna(d[p['tk']].loc[cd, 'Close'])])
-            current_compounded_eq = cash + op_val_now
-            sh = min(int((current_compounded_eq * 0.025) / rps), int(min(cash * 0.95, current_compounded_eq * 0.35) / ep))
+            tot_eq = eq[-1]['Total_Equity'] if eq else INITIAL_CAPITAL
+            sh = min(int((tot_eq * 0.025) / rps), int(min(cash * 0.95, tot_eq * 0.35) / ep))
             if sh <= 0 or sh * ep > cash:
                 continue
             cash -= sh * ep
@@ -249,13 +240,12 @@ for i in range(75, len(dates)):
                 'days': 0, 'max_g': (float(d[tk].loc[cd, 'High']) / ep) - 1, 'st_type': 'INIT_SL'
             })
 
-    # Track Daily Compounded Equity
+    # Track Daily Live Equity
     op_val = sum([p['sh'] * float(d[p['tk']].loc[cd, 'Close']) for p in pos if cd in d[p['tk']].index and not pd.isna(d[p['tk']].loc[cd, 'Close'])])
     tot_eq = round(cash + op_val, 2)
     eq.append({
         'Date': str(cd)[:10],
         'Starting_Capital': INITIAL_CAPITAL,
-        'Realized_Profit_Reinvested': round(realized_profit, 2),
         'Cash_Available': round(cash, 2),
         'Open_Positions_Value': round(op_val, 2),
         'Total_Equity': tot_eq,
@@ -292,31 +282,25 @@ eq_df = pd.DataFrame(eq)
 closed_df = pd.DataFrame(trd)
 win_rate = round((len(closed_df[closed_df['PnL_Rs'] >= 0]) / len(closed_df)) * 100, 1) if not closed_df.empty else 0.0
 max_dd = round(((eq_df['Total_Equity'] / eq_df['Total_Equity'].cummax()) - 1).min() * 100, 2) if not eq_df.empty else 0.0
-live_eq = eq_df['Total_Equity'].iloc[-1] if not eq_df.empty else INITIAL_CAPITAL
 
 summary_row = pd.DataFrame([{
     'Last_Updated': datetime.now().strftime('%Y-%m-%d'),
     'Live_Start_Date': LIVE_START_DATE,
     'Initial_Capital': INITIAL_CAPITAL,
-    'Realized_Profit_Reinvested': round(realized_profit, 2),
-    'Current_Total_Equity': live_eq,
+    'Current_Total_Equity': eq_df['Total_Equity'].iloc[-1] if not eq_df.empty else INITIAL_CAPITAL,
     'Total_Net_PnL_Rs': eq_df['Net_Profit_Rs'].iloc[-1] if not eq_df.empty else 0.0,
     'Net_Return_%': eq_df['Net_Return_%'].iloc[-1] if not eq_df.empty else 0.0,
     'Max_Drawdown_%': max_dd,
     'Completed_Trades': len(closed_df),
     'Win_or_BE_Rate_%': win_rate,
     'Active_Open_Positions': len(pos),
-    'Cash_Available': round(cash, 2)
+    'Cash_Available': eq_df['Cash_Available'].iloc[-1] if not eq_df.empty else INITIAL_CAPITAL
 }])
 summary_row.to_csv('portfolio_summary.csv', index=False)
 
-# 5. Daily Live Scanner for Next Session Watchlist (best_stocks.csv)
-# Dynamically sizes shares using Current Compounded Equity (live_eq) & Available Cash!
+# 5. Live Scanner for Upcoming Watchlist (best_stocks.csv)
 candidates = []
 today_str = datetime.now().strftime('%Y-%m-%d')
-risk_per_trade_rs = live_eq * 0.025
-max_alloc_per_trade_rs = min(cash * 0.95, live_eq * 0.35) if cash > 5000 else live_eq * 0.35
-
 for tk in tickers:
     try:
         dt = d[tk].dropna()
@@ -350,7 +334,7 @@ for tk in tickers:
             scale_px = round(origin_low * 1.35, 2)
             tgt_px = round(origin_low * 1.48, 2)
             rem_gain_pct = round(((tgt_px / entry) - 1) * 100, 1)
-            sh = int(min(risk_per_trade_rs / rps, max_alloc_per_trade_rs / entry))
+            sh = int(min(1400 / rps, 16500 / entry))
             if sh > 0 and 1.2 <= sl_pct <= 4.2 and rem_gain_pct >= 30.0:
                 candidates.append({
                     'Scan_Date': today_str, 'Tier': tier, 'Stock': tk.replace('.NS', ''),
@@ -359,8 +343,7 @@ for tk in tickers:
                     'Vol_Dry_x20D': v_ratio, 'Buy_Above': entry, 'SL': sl, 'SL_%': sl_pct,
                     'BE_Move_At_+7.5%': round(entry * 1.075, 2),
                     'Scale_35%_Origin': scale_px, 'Tgt_48%_Origin': tgt_px,
-                    'Net_Upside_Left%': rem_gain_pct, 'Compounded_Qty': sh,
-                    'Capital_Alloc': round(sh * entry, 0)
+                    'Net_Upside_Left%': rem_gain_pct, 'Qty_50k': sh, 'Capital_Req': round(sh * entry, 0)
                 })
     except Exception:
         continue
@@ -373,11 +356,11 @@ else:
     pd.DataFrame(columns=[
         'Scan_Date', 'Tier', 'Stock', 'CMP', 'Purple_Dots', 'Origin_Low', 'Moved_So_Far%',
         'Tight_2D%', 'Vol_Dry_x20D', 'Buy_Above', 'SL', 'SL_%', 'BE_Move_At_+7.5%',
-        'Scale_35%_Origin', 'Tgt_48%_Origin', 'Net_Upside_Left%', 'Compounded_Qty', 'Capital_Alloc'
+        'Scale_35%_Origin', 'Tgt_48%_Origin', 'Net_Upside_Left%', 'Qty_50k', 'Capital_Req'
     ]).to_csv('best_stocks.csv', index=False)
 
-print("\n=== DAILY PORTFOLIO SUMMARY (WITH PROFIT REINVESTMENT) ===")
+print("\n=== FRESH LIVE PORTFOLIO SUMMARY ===")
 print(summary_row.to_string(index=False))
-print("\n=== TODAY'S DAY-1 VCP WATCHLIST ===")
+print("\n=== TRUE DAY-1 VCP WATCHLIST ===")
 if not cdf.empty:
     print(cdf.to_string(index=False))
