@@ -4,9 +4,9 @@ import numpy as np
 import yfinance as yf
 from datetime import datetime
 
-print("Running Manas Arora VCP Live Forward Tracker (Starting Fresh from ₹50,000)...")
+print("Running Manas Arora VCP Daily Tracker (True Horizontal Base at 10/20 SMA + Zero Pre-Rally)...")
 
-# LIVE FORWARD-TEST START DATE (Ignores all historical backtest trades before this date!)
+# LIVE FORWARD-TEST START DATE (Starts fresh from ₹50,000 on Oct 16, 2026)
 LIVE_START_DATE = "2026-10-16"
 INITIAL_CAPITAL = 50000.0
 
@@ -16,11 +16,11 @@ mid = pd.read_csv(urllib.request.urlopen(req('https://nsearchives.nseindia.com/c
 sml = pd.read_csv(urllib.request.urlopen(req('https://nsearchives.nseindia.com/content/indices/ind_niftysmallcap250list.csv')))
 tickers = [x + '.NS' for x in list(set(mid['Symbol'].dropna().tolist() + sml['Symbol'].dropna().tolist())) if 'DUMMY' not in str(x)]
 
-print(f"Fetched {len(tickers)} stocks. Downloading daily data for indicator calculations...")
+print(f"Fetched {len(tickers)} stocks. Downloading 1Y daily data...")
 d = yf.download(tickers, period='1y', interval='1d', group_by='ticker', auto_adjust=True, threads=True)
 dates = d.index
 
-# 2. Run Forward Simulation ONLY on or after LIVE_START_DATE (With Profit Reinvestment)
+# 2. Daily Forward Simulation & Automatic Profit Reinvestment
 cash = INITIAL_CAPITAL
 pos = []
 trd = []
@@ -29,11 +29,10 @@ cooldown = {}
 
 for i in range(65, len(dates)):
     cd = dates[i]
-    # Skip all past backtest dates prior to live start date!
     if str(cd)[:10] < LIVE_START_DATE:
         continue
 
-    # --- A. Manage Live Open Positions ---
+    # --- A. Manage Live Open Positions (Exact Video 5 Trailing & Exit Rules) ---
     for p in pos[:]:
         tk = p['tk']
         dt = d[tk]
@@ -48,7 +47,7 @@ for i in range(65, len(dates)):
         s20 = float(hist['Close'].tail(20).mean())
         p['days'] += 1
 
-        # 1. Stop Loss Hit
+        # 1. Hard Stop Loss Hit
         if lo <= p['sl']:
             ep = round(p['sl'], 2)
             pnl = (ep - p['ep']) * p['sh']
@@ -66,7 +65,7 @@ for i in range(65, len(dates)):
         cg = (hi / p['ep']) - 1
         p['max_g'] = max(p['max_g'], cg)
 
-        # 2. Scale Out 50% at +36% from Swing Start Base
+        # 2. Scale Out 50% into strength at +38% from Move Start Base
         if hi >= p['scale_px'] and not p['scaled'] and p['sh'] >= 2:
             sell_sh = max(1, p['sh'] // 2)
             ep = p['scale_px']
@@ -77,20 +76,20 @@ for i in range(65, len(dates)):
             p['sl'] = round(max(p['sl'], p['ep'] * 1.18), 2)
             p['st_type'] = 'LOCK_+18%_SL'
             trd.append({
-                'Status': 'CLOSED_PARTIAL', 'Stock': tk.replace('.NS', ''), 'Exit_Reason': 'SCALE_OUT_36%_ORIGIN',
+                'Status': 'CLOSED_PARTIAL', 'Stock': tk.replace('.NS', ''), 'Exit_Reason': 'SCALE_OUT_38%',
                 'Buy_Date': str(p['bd'])[:10], 'Sell_Date': str(cd)[:10], 'Days_Held': p['days'],
                 'Entry_Px': round(p['ep'], 2), 'Exit_or_CMP': ep, 'Current_SL': p['sl'],
                 'Shares': sell_sh, 'PnL_Rs': round(pnl, 2), 'PnL_%': round(((ep / p['ep']) - 1) * 100, 2)
             })
 
-        # 3. Upper Limit Target (+48% from Swing Start Base)
+        # 3. Upper Limit Target (+48% from Move Start Base)
         if hi >= p['tgt']:
             ep = p['tgt']
             pnl = (ep - p['ep']) * p['sh']
             cash += p['sh'] * ep
             cooldown[tk] = i
             trd.append({
-                'Status': 'CLOSED', 'Stock': tk.replace('.NS', ''), 'Exit_Reason': 'TARGET_48%_ORIGIN',
+                'Status': 'CLOSED', 'Stock': tk.replace('.NS', ''), 'Exit_Reason': 'TARGET_48%',
                 'Buy_Date': str(p['bd'])[:10], 'Sell_Date': str(cd)[:10], 'Days_Held': p['days'],
                 'Entry_Px': round(p['ep'], 2), 'Exit_or_CMP': ep, 'Current_SL': p['sl'],
                 'Shares': p['sh'], 'PnL_Rs': round(pnl, 2), 'PnL_%': round(((ep / p['ep']) - 1) * 100, 2)
@@ -98,7 +97,7 @@ for i in range(65, len(dates)):
             pos.remove(p)
             continue
 
-        # 4. 10-SMA Trail (After 36% Scale-Out)
+        # 4. 10-SMA Trail once stretched (Video 5 Rule: Switch from 20MA to 10MA near 40%)
         if p['scaled'] and cl < s10 * 0.99:
             ep = round(max(cl, p['sl']), 2)
             pnl = (ep - p['ep']) * p['sh']
@@ -113,8 +112,8 @@ for i in range(65, len(dates)):
             pos.remove(p)
             continue
 
-        # 5. 20-SMA Trail (After 12+ Days)
-        if p['days'] >= 12 and s20 > p['ep'] * 1.01 and cl < s20 * 0.985:
+        # 5. 20-SMA Closing Trail once 20-SMA crosses above Breakeven (Video 5 Rule)
+        if p['days'] >= 10 and s20 > p['ep'] * 1.01 and cl < s20 * 0.985:
             ep = round(max(cl, p['sl']), 2)
             pnl = (ep - p['ep']) * p['sh']
             cash += p['sh'] * ep
@@ -128,33 +127,18 @@ for i in range(65, len(dates)):
             pos.remove(p)
             continue
 
-        # 6. Time Stop (18 Days Stagnant)
-        if p['days'] >= 18 and p['max_g'] < 0.10 and ((cl / p['ep']) - 1) < 0.03:
-            ep = round(cl, 2)
-            pnl = (ep - p['ep']) * p['sh']
-            cash += p['sh'] * ep
-            cooldown[tk] = i
-            trd.append({
-                'Status': 'CLOSED', 'Stock': tk.replace('.NS', ''), 'Exit_Reason': 'TIME_STOP_18D',
-                'Buy_Date': str(p['bd'])[:10], 'Sell_Date': str(cd)[:10], 'Days_Held': p['days'],
-                'Entry_Px': round(p['ep'], 2), 'Exit_or_CMP': ep, 'Current_SL': p['sl'],
-                'Shares': p['sh'], 'PnL_Rs': round(pnl, 2), 'PnL_%': round(((ep / p['ep']) - 1) * 100, 2)
-            })
-            pos.remove(p)
-            continue
-
-        # 7. Move SL to Breakeven at +7.5% & Lock +12% at +20%
+        # 6. Move SL to Breakeven at +7.5% (Video 5 Rule: 6-8% in favor -> Cost SL)
         if p['max_g'] >= 0.075 and not p['sm']:
             p['sl'] = round(p['ep'] * 1.003, 2)
             p['sm'] = True
             p['st_type'] = 'BREAKEVEN_SL'
-        if p['max_g'] >= 0.20:
-            new_sl = round(max(p['sl'], p['ep'] * 1.12), 2)
+        if p['max_g'] >= 0.22:
+            new_sl = round(max(p['sl'], p['ep'] * 1.12, s20 * 0.985), 2)
             if new_sl > p['sl']:
                 p['sl'] = new_sl
-                p['st_type'] = 'LOCK_+12%_SL'
+                p['st_type'] = '20SMA_HARD_SL'
 
-    # --- B. Scan for New Live Day-1 Strong Start Entries ---
+    # --- B. Daily Scan for True Day-1 Entries (From Horizontal 4D Base on 10/20 SMA) ---
     if len(pos) < 4 and cash > 8000:
         day_cands = []
         for tk in tickers:
@@ -171,51 +155,66 @@ for i in range(65, len(dates)):
                 prev_c = float(cp.iloc[-2]); cc = float(cp.iloc[-1]); v20 = float(vols.iloc[-21:-1].mean())
                 if prev_c < 30 or prev_c > 4500 or v20 < 200000:
                     continue
-                r3m = (prev_c / float(lo_s.iloc[-65:-10].min())) - 1
+
+                # 1. Prior Uptrend Force (>=35% in last 65 days) & Purple Dots
+                r3m = (float(hi_s.iloc[:-1].max()) / float(lo_s.iloc[-65:-10].min())) - 1
                 if r3m < 0.35:
                     continue
                 rets = cp.iloc[:-1].pct_change(); v_prev = vols.iloc[:-1]; h_prev = hi_s.iloc[:-1]
                 green_dots = int(((rets >= 0.048) & (v_prev >= 500000)).sum())
                 if green_dots < 2:
                     continue
-                peak_px = float(h_prev.max()); dd = 1 - (prev_c / peak_px)
-                if dd > 0.24 or dd < 0.02:
-                    continue
-                red_mask = (rets.tail(20) <= -0.048) & (v_prev.tail(20) >= 500000)
-                if red_mask.any() and prev_c < float(h_prev.tail(20)[red_mask].max()):
+
+                # 2. Must be in a Consolidation Base (3% to 24% below 35-day peak), NOT at a brand new high after a 5-day rally!
+                peak_px = float(h_prev.tail(35).max())
+                dd = 1 - (prev_c / peak_px)
+                if dd > 0.24 or dd < 0.03:
                     continue
 
-                # KEY FIX: Stock must be resting near its rising 20-SMA (max +7.5% above 20-SMA), blocking stocks already up 10-15% like CUPID!
-                s20 = float(cp.iloc[-21:-1].mean()); s20_prev = float(cp.iloc[-26:-6].mean())
-                if not (s20 * 0.965 <= prev_c <= s20 * 1.075 and s20 >= s20_prev):
+                # 3. Clean Consolidation (Any big red day must be old/reclaimed - Video 5 NALCO rule)
+                red_mask = (rets.tail(15) <= -0.048) & (v_prev.tail(15) >= 500000)
+                if red_mask.any() and prev_c < float(h_prev.tail(15)[red_mask].max()):
                     continue
 
-                rng_yest = (float(hi_s.iloc[-2]) - float(lo_s.iloc[-2])) / prev_c
-                rng_2d = float(((hi_s.iloc[-3:-1] - lo_s.iloc[-3:-1]) / cp.iloc[-3:-1]).mean())
-                h_lows = float(lo_s.iloc[-2]) >= float(lo_s.iloc[-6:-2].min())
-                v_dry = float(vols.iloc[-2]) <= v20 * 0.85
-                if not (rng_yest < 0.032 and rng_2d < 0.035 and h_lows and v_dry):
+                # 4. HUGGING 10 SMA & 20 SMA (Blocks PVRINOX +7.2% & CYIENT +7.1% above 20 SMA!)
+                s10 = float(cp.iloc[-11:-1].mean())
+                s20 = float(cp.iloc[-21:-1].mean())
+                s20_prev = float(cp.iloc[-26:-6].mean())
+                dist_10 = abs(prev_c - s10) / s10
+                dist_20 = (prev_c - s20) / s20
+                if not (dist_10 <= 0.030 and -0.025 <= dist_20 <= 0.040 and s20 >= s20_prev):
                     continue
+
+                # 5. HORIZONTAL 4-DAY BOX & ZERO 5-DAY PRE-RALLY (Blocks CYIENT +12.7% 5-bar rally!)
+                five_day_net = ((prev_c / float(cp.iloc[-7])) - 1) * 100
+                box_4d = ((float(hi_s.iloc[-5:-1].max()) - float(lo_s.iloc[-5:-1].min())) / prev_c) * 100
+                rng_yest = ((float(hi_s.iloc[-2]) - float(lo_s.iloc[-2])) / prev_c) * 100
+                h_lows = float(lo_s.iloc[-2]) >= float(lo_s.iloc[-7:-2].min())
+                v_dry = float(vols.iloc[-3:-1].mean()) <= v20 * 0.85
+                if not (-4.0 <= five_day_net <= 3.8 and box_4d <= 6.0 and rng_yest <= 3.2 and h_lows and v_dry):
+                    continue
+
+                # 6. Day-1 Strong Start Trigger (Video 5 Rule: Open > Prev Close, Cross Prev Day High on High Volume)
                 prev_hi = round(float(hi_s.iloc[-2]) * 1.001, 2)
                 td_op = float(op_s.iloc[-1]); td_hi = float(hi_s.iloc[-1]); td_lo = float(lo_s.iloc[-1])
-                strong_open = (td_op >= prev_c * 0.998) and (td_op <= prev_hi * 1.025) and ((td_op - td_lo) / td_op <= 0.015)
-                strong_vol_brk = (td_hi > prev_hi) and (cc > prev_hi) and (float(vols.iloc[-1]) >= v20 * 1.35)
+                strong_open = (td_op >= prev_c * 0.998) and (td_op <= prev_hi * 1.025)
+                strong_vol_brk = (td_hi > prev_hi) and (cc > prev_hi) and (float(vols.iloc[-1]) >= v20 * 1.30)
                 if strong_open and strong_vol_brk:
                     ep_px = max(prev_hi, round(td_op, 2))
+                    # Stop Loss = Low of the Day (LOD) or tight yesterday low (Video 5 Rule: 106 entry, 103 LOD SL)
                     sl_px = round(max(min(td_lo, float(lo_s.iloc[-2])) * 0.996, ep_px * 0.962), 2)
                     if td_lo <= sl_px:
                         continue
                     risk_pct = (ep_px - sl_px) / ep_px
-                    if 0.012 <= risk_pct <= 0.04:
-                        # Swing Origin Base is anchored to the 20-SMA / 10-day support low
-                        origin_base = round(min(s20, float(lo_s.iloc[-11:-1].min())), 2)
-                        score = (green_dots * 25) + (r3m * 50) + (float(vols.iloc[-1]) / v20 * 10)
-                        day_cands.append((score, tk, ep_px, sl_px, origin_base))
+                    if 0.012 <= risk_pct <= 0.042:
+                        move_start_px = round(float(lo_s.iloc[-5:-1].min()), 2)
+                        score = (green_dots * 25) + (r3m * 50) - (box_4d * 10)
+                        day_cands.append((score, tk, ep_px, sl_px, move_start_px))
             except Exception:
                 continue
 
         day_cands.sort(key=lambda x: x[0], reverse=True)
-        for score, tk, ep, sl, orig_base in day_cands:
+        for score, tk, ep, sl, move_start_px in day_cands:
             if len(pos) >= 4 or cash < 8000:
                 break
             rps = ep - sl
@@ -227,7 +226,7 @@ for i in range(65, len(dates)):
             cash -= sh * ep
             pos.append({
                 'tk': tk, 'bd': cd, 'ep': ep, 'sh': sh, 'sl': sl,
-                'scale_px': round(orig_base * 1.36, 2), 'tgt': round(orig_base * 1.48, 2),
+                'scale_px': round(move_start_px * 1.38, 2), 'tgt': round(move_start_px * 1.48, 2),
                 'sm': False, 'scaled': False, 'days': 0,
                 'max_g': (float(d[tk].loc[cd, 'High']) / ep) - 1, 'st_type': 'INIT_SL'
             })
@@ -292,7 +291,7 @@ summary_row = pd.DataFrame([{
 summary_row.to_csv('portfolio_summary.csv', index=False)
 
 # 5. Live Scanner for Upcoming Watchlist (best_stocks.csv)
-# Your exact working filter + blocks stocks >7.5% extended above 20-SMA (like CUPID at +13.4%)!
+# Finds ONLY Horizontal Coiled Bases resting right on 10/20 SMA (like IREDA & NALCO in Video 5)
 candidates = []
 today_str = datetime.now().strftime('%Y-%m-%d')
 risk_per_trade = live_eq * 0.028
@@ -305,68 +304,84 @@ for tk in tickers:
             continue
         hist = dt.tail(65)
         cp = hist['Close']; vols = hist['Volume']; hi_s = hist['High']; lo_s = hist['Low']
-        cc = float(cp.iloc[-1]); s20 = float(cp.tail(20).mean()); s20_prev = float(cp.iloc[-25:-5].mean()); v20 = float(vols.tail(20).mean())
+        cc = float(cp.iloc[-1]); s10 = float(cp.tail(10).mean()); s20 = float(cp.tail(20).mean())
+        s20_prev = float(cp.iloc[-25:-5].mean()); v20 = float(vols.tail(20).mean())
         if cc < 30 or cc > 4500 or v20 < 200000:
             continue
-        r3m = ((cc / float(lo_s.tail(65).min())) - 1) * 100
+
+        # 1. Prior Rally Force (>=35% in last 65 days) & Purple Dots
+        r3m = ((float(hi_s.max()) / float(lo_s.tail(65).min())) - 1) * 100
         if r3m < 35.0:
             continue
         rets = cp.pct_change()
         green_dots = int(((rets >= 0.048) & (vols >= 500000)).sum())
         if green_dots < 2:
             continue
-        dd = (1 - (cc / float(hi_s.max()))) * 100
-        if dd > 24.0 or dd < 1.5:
-            continue
-        red_mask = (rets.tail(20) <= -0.048) & (vols.tail(20) >= 500000)
-        if not ((not red_mask.any()) or (cc >= float(hi_s.tail(20)[red_mask].max()))):
+
+        # 2. Must be in a Consolidation Pullback (3% to 24% below peak), NOT already breaking out at highs!
+        dd = (1 - (cc / float(hi_s.tail(35).max()))) * 100
+        if dd > 24.0 or dd < 3.0:
             continue
 
-        # THE 1-LINE FIX: Must be resting near rising 20-SMA (-3.5% to +7.5% max extension from 20-SMA)
-        dist_sma20 = round(((cc / s20) - 1) * 100, 1)
-        if not (-3.5 <= dist_sma20 <= 7.5 and s20 >= s20_prev):
+        # 3. Clean Pullback (No unrecovered big red days in last 15 sessions)
+        red_mask = (rets.tail(15) <= -0.048) & (vols.tail(15) >= 500000)
+        if not ((not red_mask.any()) or (cc >= float(hi_s.tail(15)[red_mask].max()))):
             continue
 
-        rng_2d = float(((hi_s.tail(2) - lo_s.tail(2)) / cp.tail(2)).mean() * 100)
-        v_ratio = round(float(vols.iloc[-1]) / v20, 2) if v20 > 0 else 9.9
-        h_lows = float(lo_s.iloc[-1]) >= float(lo_s.tail(5).min())
-        if rng_2d <= 4.5 and v_ratio <= 1.05 and h_lows:
-            tier = "1_ULTRA_STRICT" if (rng_2d <= 3.5 and v_ratio <= 0.90 and dist_sma20 <= 4.5) else "2_VCP_RADAR"
+        # 4. HUGGING 10 SMA & 20 SMA (Blocks PVRINOX at +7.2% & CYIENT at +7.1% above 20 SMA!)
+        dist_10sma = round(((cc / s10) - 1) * 100, 1)
+        dist_20sma = round(((cc / s20) - 1) * 100, 1)
+        if not (-2.5 <= dist_10sma <= 3.0 and -2.5 <= dist_20sma <= 4.0 and s20 >= s20_prev):
+            continue
+
+        # 5. HORIZONTAL 4-DAY BOX & ZERO 5-DAY PRE-RALLY (Blocks CYIENT's +12.69% 5-bar rally!)
+        five_day_net = round(((cc / float(cp.iloc[-6])) - 1) * 100, 1)
+        box_4d = round(((float(hi_s.tail(4).max()) - float(lo_s.tail(4).min())) / cc) * 100, 2)
+        rng_today = round(((float(hi_s.iloc[-1]) - float(lo_s.iloc[-1])) / cc) * 100, 2)
+        v_ratio = round(float(vols.tail(2).mean()) / v20, 2) if v20 > 0 else 9.9
+        h_lows = float(lo_s.iloc[-1]) >= float(lo_s.tail(6).min())
+
+        if -4.0 <= five_day_net <= 3.8 and box_4d <= 6.0 and rng_today <= 3.2 and v_ratio <= 0.90 and h_lows:
+            tier = "1_IREDA_COIL" if (box_4d <= 4.5 and abs(dist_10sma) <= 2.0 and v_ratio <= 0.75) else "2_BASE_COIL"
             entry = round(float(hi_s.iloc[-1]) * 1.001, 2)
-            sl = round(max(float(lo_s.tail(2).min()) * 0.996, entry * 0.96), 2)
+            sl = round(max(float(lo_s.tail(2).min()) * 0.996, entry * 0.965), 2)
             rps = max(entry - sl, 0.5)
             sl_pct = round(((entry - sl) / entry) * 100, 2)
-            # Swing Origin Base (20-SMA / 10D support) so targets are measured from where the move started!
-            origin_base = round(min(s20, float(lo_s.tail(10).min())), 2)
-            scale_36 = round(origin_base * 1.36, 2)
-            target_48 = round(origin_base * 1.48, 2)
+            # Move Start Low = Bottom of the tight 4-day box (exact point where the new move starts!)
+            move_start_low = round(float(lo_s.tail(4).min()), 2)
             sh = int(min(risk_per_trade / rps, max_cap_per_trade / entry))
-            if sh > 0 and 1.0 <= sl_pct <= 4.5:
+            if sh > 0 and 1.0 <= sl_pct <= 4.0:
                 candidates.append({
                     'Scan_Date': today_str, 'Tier': tier, 'Stock': tk.replace('.NS', ''),
-                    'CMP': round(cc, 2), 'Purple_Dots': green_dots, '3M_Force%': round(r3m, 1),
-                    'Dist_20SMA%': dist_sma20, 'Origin_Base': origin_base,
-                    'Tight_2D%': round(rng_2d, 2), 'Vol_Dry_x20D': v_ratio,
+                    'CMP': round(cc, 2), 'Purple_Dots': green_dots, 'Pullback_From_High%': round(dd, 1),
+                    'Dist_10SMA%': dist_10sma, 'Dist_20SMA%': dist_20sma,
+                    '5D_Net_Chg%': five_day_net, '4D_Box_Width%': box_4d,
+                    'Today_Rng%': rng_today, 'Vol_Dry_x20D': v_ratio,
                     'Day1_Buy_Above': entry, 'LOD_SL': sl, 'SL_%': sl_pct,
-                    'BE_Move_At_+8%': round(entry * 1.08, 2), 'ScaleOut_36%': scale_36,
-                    'Target_48%': target_48, 'Qty_for_50k': sh, 'Capital_Req': round(sh * entry, 0)
+                    'BE_Move_At_+8%': round(entry * 1.08, 2),
+                    'ScaleOut_38%': round(move_start_low * 1.38, 2),
+                    'Target_48%': round(move_start_low * 1.48, 2),
+                    'Qty_for_50k': sh, 'Capital_Req': round(sh * entry, 0)
                 })
     except Exception:
         continue
 
 cdf = pd.DataFrame(candidates)
 if not cdf.empty:
-    cdf = cdf.sort_values(by=['Tier', 'Dist_20SMA%', 'Tight_2D%'], ascending=[True, True, True]).head(15)
+    cdf = cdf.sort_values(by=['Tier', '4D_Box_Width%', 'Today_Rng%'], ascending=[True, True, True]).head(15)
     cdf.to_csv('best_stocks.csv', index=False)
 else:
     pd.DataFrame(columns=[
-        'Scan_Date', 'Tier', 'Stock', 'CMP', 'Purple_Dots', '3M_Force%', 'Dist_20SMA%',
-        'Origin_Base', 'Tight_2D%', 'Vol_Dry_x20D', 'Day1_Buy_Above', 'LOD_SL', 'SL_%',
-        'BE_Move_At_+8%', 'ScaleOut_36%', 'Target_48%', 'Qty_for_50k', 'Capital_Req'
+        'Scan_Date', 'Tier', 'Stock', 'CMP', 'Purple_Dots', 'Pullback_From_High%',
+        'Dist_10SMA%', 'Dist_20SMA%', '5D_Net_Chg%', '4D_Box_Width%',
+        'Today_Rng%', 'Vol_Dry_x20D', 'Day1_Buy_Above', 'LOD_SL', 'SL_%',
+        'BE_Move_At_+8%', 'ScaleOut_38%', 'Target_48%', 'Qty_for_50k', 'Capital_Req'
     ]).to_csv('best_stocks.csv', index=False)
 
 print("\n=== FRESH LIVE PORTFOLIO SUMMARY ===")
 print(summary_row.to_string(index=False))
-print("\n=== UPCOMING DAY-1 VCP WATCHLIST ===")
+print("\n=== TRUE HORIZONTAL BASE WATCHLIST (ZERO 5-DAY PRE-RALLY) ===")
 if not cdf.empty:
     print(cdf.to_string(index=False))
+else:
+    print("No stocks met the strict horizontal 10/20 SMA coil today.")
