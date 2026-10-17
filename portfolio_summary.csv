@@ -1,2 +1,2 @@
-Last_Updated,Live_Start_Date,Initial_Capital,Current_Total_Equity,Total_Net_PnL_Rs,Net_Return_%,Max_Drawdown_%,Completed_Trades,Win_or_BE_Rate_%,Active_Open_Positions,Cash_Available
-2026-10-16,2026-10-16,50000.0,50000.0,0.0,0.0,0.0,0,0.0,0,50000.0
+Last_Updated,Live_Start_Date,Initial_Capital,Realized_Profit_Reinvested,Current_Total_Equity,Total_Net_PnL_Rs,Net_Return_%,Max_Drawdown_%,Completed_Trades,Win_or_BE_Rate_%,Active_Open_Positions,Cash_Available
+2026-10-17,2026-10-16,50000.0,0.0,50000.0,0.0,0.0,0.0,0,0.0,0,50000.0
