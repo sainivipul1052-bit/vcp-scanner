@@ -66,26 +66,26 @@ for i in range(65, len(dates)):
         cg = (hi / p['ep']) - 1
         p['max_g'] = max(p['max_g'], cg)
 
-        # 2. Scale Out 50% at +36% Gain
-        if cg >= 0.36 and not p['scaled'] and p['sh'] >= 2:
+        # 2. Scale Out 50% at +36% from Swing Start Low
+        if hi >= p['scale_px'] and not p['scaled'] and p['sh'] >= 2:
             sell_sh = max(1, p['sh'] // 2)
-            ep = round(p['ep'] * 1.36, 2)
+            ep = p['scale_px']
             pnl = (ep - p['ep']) * sell_sh
             cash += sell_sh * ep
             p['sh'] -= sell_sh
             p['scaled'] = True
-            p['sl'] = round(max(p['sl'], p['ep'] * 1.22), 2)
-            p['st_type'] = 'LOCK_+22%_SL'
+            p['sl'] = round(max(p['sl'], p['ep'] * 1.18), 2)
+            p['st_type'] = 'LOCK_+18%_SL'
             trd.append({
                 'Status': 'CLOSED_PARTIAL', 'Stock': tk.replace('.NS', ''), 'Exit_Reason': 'SCALE_OUT_36%',
                 'Buy_Date': str(p['bd'])[:10], 'Sell_Date': str(cd)[:10], 'Days_Held': p['days'],
                 'Entry_Px': round(p['ep'], 2), 'Exit_or_CMP': ep, 'Current_SL': p['sl'],
-                'Shares': sell_sh, 'PnL_Rs': round(pnl, 2), 'PnL_%': 36.0
+                'Shares': sell_sh, 'PnL_Rs': round(pnl, 2), 'PnL_%': round(((ep / p['ep']) - 1) * 100, 2)
             })
 
-        # 3. Upper Limit Target (+48%)
-        if cg >= 0.48 or hi >= p['tgt']:
-            ep = round(p['ep'] * 1.48, 2)
+        # 3. Upper Limit Target (+48% from Swing Start Low)
+        if hi >= p['tgt']:
+            ep = p['tgt']
             pnl = (ep - p['ep']) * p['sh']
             cash += p['sh'] * ep
             cooldown[tk] = i
@@ -93,7 +93,7 @@ for i in range(65, len(dates)):
                 'Status': 'CLOSED', 'Stock': tk.replace('.NS', ''), 'Exit_Reason': 'TARGET_48%',
                 'Buy_Date': str(p['bd'])[:10], 'Sell_Date': str(cd)[:10], 'Days_Held': p['days'],
                 'Entry_Px': round(p['ep'], 2), 'Exit_or_CMP': ep, 'Current_SL': p['sl'],
-                'Shares': p['sh'], 'PnL_Rs': round(pnl, 2), 'PnL_%': 48.0
+                'Shares': p['sh'], 'PnL_Rs': round(pnl, 2), 'PnL_%': round(((ep / p['ep']) - 1) * 100, 2)
             })
             pos.remove(p)
             continue
@@ -154,7 +154,7 @@ for i in range(65, len(dates)):
                 p['sl'] = new_sl
                 p['st_type'] = 'LOCK_+12%_SL'
 
-    # --- B. Scan for New Live Day-1 Strong Start Entries ---
+    # --- B. Scan for New Live Day-1 Strong Start Entries (Right Where Move Starts!) ---
     if len(pos) < 4 and cash > 8000:
         day_cands = []
         for tk in tickers:
@@ -184,16 +184,27 @@ for i in range(65, len(dates)):
                 red_mask = (rets.tail(20) <= -0.048) & (v_prev.tail(20) >= 500000)
                 if red_mask.any() and prev_c < float(h_prev.tail(20)[red_mask].max()):
                     continue
-                s20 = float(cp.iloc[-21:-1].mean()); s20_prev = float(cp.iloc[-26:-6].mean())
-                if not (prev_c >= s20 * 0.97 and s20 >= s20_prev):
+
+                # FIX 1: Stock MUST be hugging the rising 20-SMA (within -2% to +5%), NOT already extended 8-10% above it!
+                s20 = float(cp.iloc[-21:-1].mean()); s20_prev = float(cp.iloc[-26:-6].mean()); s50 = float(cp.iloc[-51:-1].mean())
+                if not (s20 * 0.98 <= prev_c <= s20 * 1.05 and s20 > s20_prev and s20 >= s50):
                     continue
+
+                # FIX 2: Stock must NOT have already moved >6.5% from its 10-day Swing Start Low or >4.5% in the last 5 days!
+                swing_start_low = round(float(lo_s.iloc[-11:-1].min()), 2)
+                prev_hi = round(float(hi_s.iloc[-2]) * 1.001, 2)
+                moved_from_start = ((prev_hi / swing_start_low) - 1) * 100
+                five_day_chg = ((prev_c / float(cp.iloc[-7])) - 1) * 100
+                if moved_from_start > 6.5 or five_day_chg > 4.5:
+                    continue
+
                 rng_yest = (float(hi_s.iloc[-2]) - float(lo_s.iloc[-2])) / prev_c
                 rng_2d = float(((hi_s.iloc[-3:-1] - lo_s.iloc[-3:-1]) / cp.iloc[-3:-1]).mean())
                 h_lows = float(lo_s.iloc[-2]) >= float(lo_s.iloc[-6:-2].min())
                 v_dry = float(vols.iloc[-2]) <= v20 * 0.85
                 if not (rng_yest < 0.032 and rng_2d < 0.035 and h_lows and v_dry):
                     continue
-                prev_hi = round(float(hi_s.iloc[-2]) * 1.001, 2)
+
                 td_op = float(op_s.iloc[-1]); td_hi = float(hi_s.iloc[-1]); td_lo = float(lo_s.iloc[-1])
                 strong_open = (td_op >= prev_c * 0.998) and (td_op <= prev_hi * 1.025) and ((td_op - td_lo) / td_op <= 0.015)
                 strong_vol_brk = (td_hi > prev_hi) and (cc > prev_hi) and (float(vols.iloc[-1]) >= v20 * 1.35)
@@ -204,25 +215,27 @@ for i in range(65, len(dates)):
                         continue
                     risk_pct = (ep_px - sl_px) / ep_px
                     if 0.012 <= risk_pct <= 0.04:
-                        score = (green_dots * 25) + (r3m * 50) + (float(vols.iloc[-1]) / v20 * 10)
-                        day_cands.append((score, tk, ep_px, sl_px))
+                        score = (green_dots * 25) + (r3m * 50) - (moved_from_start * 5)
+                        day_cands.append((score, tk, ep_px, sl_px, swing_start_low))
             except Exception:
                 continue
 
         day_cands.sort(key=lambda x: x[0], reverse=True)
-        for score, tk, ep, sl in day_cands:
+        for score, tk, ep, sl, sw_low in day_cands:
             if len(pos) >= 4 or cash < 8000:
                 break
             rps = ep - sl
-            tot_eq = eq[-1]['Total_Equity'] if eq else INITIAL_CAPITAL
+            op_val_now = sum([p['sh'] * float(d[p['tk']].loc[cd, 'Close']) for p in pos if cd in d[p['tk']].index and not pd.isna(d[p['tk']].loc[cd, 'Close'])])
+            tot_eq = cash + op_val_now
             sh = min(int((tot_eq * 0.025) / rps), int(min(cash * 0.95, tot_eq * 0.35) / ep))
             if sh <= 0 or sh * ep > cash:
                 continue
             cash -= sh * ep
             pos.append({
                 'tk': tk, 'bd': cd, 'ep': ep, 'sh': sh, 'sl': sl,
-                'tgt': round(ep * 1.48, 2), 'sm': False, 'scaled': False,
-                'days': 0, 'max_g': (float(d[tk].loc[cd, 'High']) / ep) - 1, 'st_type': 'INIT_SL'
+                'scale_px': round(sw_low * 1.36, 2), 'tgt': round(sw_low * 1.48, 2),
+                'sm': False, 'scaled': False, 'days': 0,
+                'max_g': (float(d[tk].loc[cd, 'High']) / ep) - 1, 'st_type': 'INIT_SL'
             })
 
     # Track Daily Live Equity
@@ -267,25 +280,30 @@ eq_df = pd.DataFrame(eq)
 closed_df = pd.DataFrame(trd)
 win_rate = round((len(closed_df[closed_df['PnL_Rs'] >= 0]) / len(closed_df)) * 100, 1) if not closed_df.empty else 0.0
 max_dd = round(((eq_df['Total_Equity'] / eq_df['Total_Equity'].cummax()) - 1).min() * 100, 2) if not eq_df.empty else 0.0
+live_eq = eq_df['Total_Equity'].iloc[-1] if not eq_df.empty else INITIAL_CAPITAL
 
 summary_row = pd.DataFrame([{
     'Last_Updated': datetime.now().strftime('%Y-%m-%d'),
     'Live_Start_Date': LIVE_START_DATE,
     'Initial_Capital': INITIAL_CAPITAL,
-    'Current_Total_Equity': eq_df['Total_Equity'].iloc[-1] if not eq_df.empty else INITIAL_CAPITAL,
+    'Current_Total_Equity': live_eq,
     'Total_Net_PnL_Rs': eq_df['Net_Profit_Rs'].iloc[-1] if not eq_df.empty else 0.0,
     'Net_Return_%': eq_df['Net_Return_%'].iloc[-1] if not eq_df.empty else 0.0,
     'Max_Drawdown_%': max_dd,
     'Completed_Trades': len(closed_df),
     'Win_or_BE_Rate_%': win_rate,
     'Active_Open_Positions': len(pos),
-    'Cash_Available': eq_df['Cash_Available'].iloc[-1] if not eq_df.empty else INITIAL_CAPITAL
+    'Cash_Available': round(cash, 2)
 }])
 summary_row.to_csv('portfolio_summary.csv', index=False)
 
 # 5. Live Scanner for Upcoming Watchlist (best_stocks.csv)
+# Uses your working logic + blocks stocks that have already moved >6.5% from Swing Start Low or >5% above 20-SMA!
 candidates = []
 today_str = datetime.now().strftime('%Y-%m-%d')
+risk_per_trade = live_eq * 0.028
+max_cap_per_trade = min(cash * 0.95, live_eq * 0.35) if cash > 8000 else live_eq * 0.35
+
 for tk in tickers:
     try:
         dt = d[tk].dropna()
@@ -293,7 +311,7 @@ for tk in tickers:
             continue
         hist = dt.tail(65)
         cp = hist['Close']; vols = hist['Volume']; hi_s = hist['High']; lo_s = hist['Low']
-        cc = float(cp.iloc[-1]); s20 = float(cp.tail(20).mean()); s20_prev = float(cp.iloc[-25:-5].mean()); v20 = float(vols.tail(20).mean())
+        cc = float(cp.iloc[-1]); s20 = float(cp.tail(20).mean()); s20_prev = float(cp.iloc[-25:-5].mean()); s50 = float(cp.tail(50).mean()); v20 = float(vols.tail(20).mean())
         if cc < 30 or cc > 4500 or v20 < 200000:
             continue
         r3m = ((cc / float(lo_s.tail(65).min())) - 1) * 100
@@ -309,40 +327,60 @@ for tk in tickers:
         red_mask = (rets.tail(20) <= -0.048) & (vols.tail(20) >= 500000)
         if not ((not red_mask.any()) or (cc >= float(hi_s.tail(20)[red_mask].max()))):
             continue
-        if not (cc >= s20 * 0.965 and s20 >= s20_prev):
+
+        # FIX 1: Must be resting near rising 20-SMA (between -2% and +5.5% of 20-SMA) & above 50-SMA
+        if not (s20 * 0.98 <= cc <= s20 * 1.055 and s20 > s20_prev and s20 >= s50):
             continue
+
+        # FIX 2: Check distance from 10-day Swing Start Low (Rejects stocks already up 8-10%!)
+        swing_start_low = round(float(lo_s.tail(10).min()), 2)
+        entry = round(float(hi_s.iloc[-1]) * 1.001, 2)
+        moved_from_start = round(((entry / swing_start_low) - 1) * 100, 1)
+        five_day_chg = round(((cc / float(cp.iloc[-6])) - 1) * 100, 1)
+        if moved_from_start > 6.5 or five_day_chg > 4.5:
+            continue
+
         rng_2d = float(((hi_s.tail(2) - lo_s.tail(2)) / cp.tail(2)).mean() * 100)
         v_ratio = round(float(vols.iloc[-1]) / v20, 2) if v20 > 0 else 9.9
         h_lows = float(lo_s.iloc[-1]) >= float(lo_s.tail(5).min())
-        if rng_2d <= 4.5 and v_ratio <= 1.05 and h_lows:
-            tier = "1_ULTRA_STRICT" if (rng_2d <= 3.5 and v_ratio <= 0.90) else "2_VCP_RADAR"
-            entry = round(float(hi_s.iloc[-1]) * 1.001, 2)
-            sl = round(max(float(lo_s.tail(2).min()) * 0.996, entry * 0.96), 2)
+
+        if rng_2d <= 4.0 and v_ratio <= 1.0 and h_lows:
+            tier = "1_ULTRA_STRICT" if (rng_2d <= 3.0 and v_ratio <= 0.85 and moved_from_start <= 5.0) else "2_VCP_RADAR"
+            sl = round(max(float(lo_s.tail(2).min()) * 0.996, entry * 0.962), 2)
             rps = max(entry - sl, 0.5)
             sl_pct = round(((entry - sl) / entry) * 100, 2)
-            sh = int(min(1400 / rps, 16500 / entry))
-            if sh > 0 and 1.0 <= sl_pct <= 4.5:
+            sh = int(min(risk_per_trade / rps, max_cap_per_trade / entry))
+            if sh > 0 and 1.0 <= sl_pct <= 4.2:
                 candidates.append({
                     'Scan_Date': today_str, 'Tier': tier, 'Stock': tk.replace('.NS', ''),
                     'CMP': round(cc, 2), 'Purple_Dots': green_dots, '3M_Force%': round(r3m, 1),
-                    'Pullback%': round(dd, 1), 'Tight_2D%': round(rng_2d, 2), 'Vol_Dry_x20D': v_ratio,
+                    'Swing_Start_Low': swing_start_low, 'Moved_From_Start%': moved_from_start,
+                    'Tight_2D%': round(rng_2d, 2), 'Vol_Dry_x20D': v_ratio,
                     'Day1_Buy_Above': entry, 'LOD_SL': sl, 'SL_%': sl_pct,
-                    'BE_Move_At_+8%': round(entry * 1.08, 2), 'ScaleOut_36%': round(entry * 1.36, 2),
-                    'Target_48%': round(entry * 1.48, 2), 'Qty_for_50k': sh, 'Capital_Req': round(sh * entry, 0)
+                    'BE_Move_At_+8%': round(entry * 1.08, 2),
+                    'ScaleOut_36%': round(swing_start_low * 1.36, 2),
+                    'Target_48%': round(swing_start_low * 1.48, 2),
+                    'Qty_for_50k': sh, 'Capital_Req': round(sh * entry, 0)
                 })
     except Exception:
         continue
 
 cdf = pd.DataFrame(candidates)
 if not cdf.empty:
-    cdf = cdf.sort_values(by=['Tier', 'Purple_Dots', 'Tight_2D%'], ascending=[True, False, True]).head(15)
+    cdf = cdf.sort_values(by=['Tier', 'Moved_From_Start%', 'Tight_2D%'], ascending=[True, True, True]).head(15)
     cdf.to_csv('best_stocks.csv', index=False)
 else:
     pd.DataFrame(columns=[
-        'Scan_Date', 'Tier', 'Stock', 'CMP', 'Purple_Dots', '3M_Force%', 'Pullback%',
-        'Tight_2D%', 'Vol_Dry_x20D', 'Day1_Buy_Above', 'LOD_SL', 'SL_%',
-        'BE_Move_At_+8%', 'ScaleOut_36%', 'Target_48%', 'Qty_for_50k', 'Capital_Req'
+        'Scan_Date', 'Tier', 'Stock', 'CMP', 'Purple_Dots', '3M_Force%',
+        'Swing_Start_Low', 'Moved_From_Start%', 'Tight_2D%', 'Vol_Dry_x20D',
+        'Day1_Buy_Above', 'LOD_SL', 'SL_%', 'BE_Move_At_+8%', 'ScaleOut_36%',
+        'Target_48%', 'Qty_for_50k', 'Capital_Req'
     ]).to_csv('best_stocks.csv', index=False)
 
 print("\n=== FRESH LIVE PORTFOLIO SUMMARY ===")
 print(summary_row.to_string(index=False))
+print("\n=== UPCOMING DAY-1 VCP WATCHLIST ===")
+if not cdf.empty:
+    print(cdf.to_string(index=False))
+else:
+    print("No stocks met the strict Day-1 start criteria today.")
