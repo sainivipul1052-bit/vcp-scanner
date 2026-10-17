@@ -1,41 +1,37 @@
-
-name: Stock Scanner
+name: Daily VCP Stock Screener & Tracker
 
 on:
-  workflow_dispatch:
   schedule:
-    - cron: "30 10 * * 1-5"
+    # Runs every trading day (Monday to Friday) at 10:30 UTC (4:00 PM IST, after NSE close)
+    - cron: '30 10 * * 1-5'
+  workflow_dispatch: # Allows manual trigger from the Actions tab anytime
 
 permissions:
-  contents: read
+  contents: write
 
 jobs:
-  scan:
+  run-scanner:
     runs-on: ubuntu-latest
-    timeout-minutes: 30
-
     steps:
-      - name: Download repository files
+      - name: Checkout repository
         uses: actions/checkout@v4
 
       - name: Set up Python
         uses: actions/setup-python@v5
         with:
-          python-version: "3.10"
+          python-version: '3.10'
 
-      - name: Install scanner packages
-        run: python -m pip install --upgrade pip pandas numpy requests yfinance
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install pandas numpy yfinance
 
-      - name: Run Python scanner
+      - name: Run Daily VCP Screener & Portfolio Tracker
         run: python scanner.py
 
-      - name: Save CSV reports
-        if: always()
-        uses: actions/upload-artifact@v4
-        with:
-          name: stock-scanner-reports
-          path: |
-            early_entry_radar.csv
-            breakout_alerts.csv
-          if-no-files-found: warn
-          retention-days: 7
+      - name: Commit and push all 3 CSV files
+        run: |
+          git config --global user.name 'GitHub Actions Bot'
+          git config --global user.email 'actions@github.com'
+          git add best_stocks.csv trade_log.csv portfolio_summary.csv
+          git diff --quiet && git diff --staged --quiet || (git commit -m "Daily VCP Watchlist, Trade Log & Portfolio Update [skip ci]" && git push)
