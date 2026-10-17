@@ -1,2 +1,1 @@
-Scan_Date,Tier,Stock,CMP,Purple_Dots,Pullback_From_High%,Dist_10SMA%,Dist_20SMA%,5D_Net_Chg%,4D_Box_Width%,Today_Rng%,Vol_Dry_x20D,Day1_Buy_Above,LOD_SL,SL_%,BE_Move_At_+8%,ScaleOut_38%,Target_48%,Qty_for_50k,Capital_Req
-2026-10-17,1_IREDA_COIL,GLAND,3066.3,2,3.3,1.0,2.9,-0.4,3.42,2.5,0.44,3079.98,2988.1,2.98,3326.38,4140.14,4440.15,5,15400.0
+Scan_Date,Tier,Stock,CMP,Purple_Dots,Pullback%,Dist_20SMA%,5D_Chg%,Max_6D_Bar%,Today_Bar%,Inside_Bar,Vol_x20D,GapUp_Above_Close,Buy_Stop_High,LOD_SL,SL_%,BE_At_+7.5%,Scale1_28%_Start,Scale2_40%_Start,Max_48%_Start,Qty_50k,Capital_Req
