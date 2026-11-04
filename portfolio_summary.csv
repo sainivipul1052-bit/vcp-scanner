@@ -1,2 +1,2 @@
 Last_Updated,Live_Start_Date,Market_Regime,Initial_Capital,Realized_Profit_Reinvested,Current_Total_Equity,Total_Net_PnL_Rs,Net_Return_%,Max_Drawdown_%,Completed_Trades,Win_or_BE_Rate_%,Loss_Streak,Active_Open_Positions,Cash_Available
-2026-11-03,2026-10-16,WEAK (<20 SMA - Trail 10SMA),50000.0,0.0,52368.63,2368.63,4.74,-1.64,0,0.0,0,2,14888.78
+2026-11-04,2026-10-16,HEALTHY (>20 SMA),50000.0,0.0,53084.99,3084.99,6.17,-1.64,0,0.0,0,3,989.24
