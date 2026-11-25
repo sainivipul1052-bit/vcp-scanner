@@ -1,3 +1,4 @@
+import os
 import urllib.request
 import pandas as pd
 import numpy as np
@@ -35,6 +36,7 @@ mkt_index = close_matrix.pct_change().mean(axis=1).add(1).cumprod()
 mkt_sma20 = mkt_index.rolling(20).mean()
 
 # 2. Daily Forward Portfolio Engine (With Rule 4, 5, 6 & 7 + Profit Reinvestment)
+# Main Portfolio State (Strictly max 4 slots, cash-constrained - UNCHANGED)
 cash = INITIAL_CAPITAL
 realized_profit = 0.0
 pos = []
@@ -44,6 +46,11 @@ cooldown = {}
 loss_streak = 0
 pause_until_idx = -1
 
+# Parallel Paper-Trading Engine for ALL Signals (Tracks Main + Extra Signals separately)
+all_pos = []
+all_trd = []
+all_realized_profit = 0.0
+
 for i in range(85, len(dates)):
     cd = dates[i]
     if str(cd)[:10] < LIVE_START_DATE:
@@ -51,7 +58,7 @@ for i in range(85, len(dates)):
 
     mkt_weak = bool(mkt_index.iloc[i] < mkt_sma20.iloc[i]) if not pd.isna(mkt_sma20.iloc[i]) else False
 
-    # --- A. Manage Open Positions (Rule 4, 5 & 6) ---
+    # --- A1. Manage Open Positions: MAIN PORTFOLIO (UNCHANGED) ---
     for p in pos[:]:
         tk = p['tk']
         dt = d[tk]
@@ -99,7 +106,7 @@ for i in range(85, len(dates)):
             p['sm'] = True
             p['st_type'] = 'BREAKEVEN_SL'
 
-        # Rule 5.1: Gradual Scale-Out Tranche 1 at +28% from Swing Start (Typical 25-30% Swing Range)
+        # Rule 5.1: Gradual Scale-Out Tranche 1 at +28% from Swing Start
         if hi >= p['t1_28'] and not p['scaled_28'] and p['sh'] >= 3:
             sell_sh = max(1, p['sh'] // 3)
             ep = p['t1_28']
@@ -119,7 +126,7 @@ for i in range(85, len(dates)):
                 'PnL_%': round(((ep / p['ep']) - 1) * 100, 2)
             })
 
-        # Rule 5.2: Gradual Scale-Out Tranche 2 at +40% from Swing Start (Entering 40-50% Extended Zone)
+        # Rule 5.2: Gradual Scale-Out Tranche 2 at +40% from Swing Start
         if hi >= p['t2_40'] and not p['scaled_40'] and p['sh'] >= 2:
             sell_sh = max(1, p['sh'] // 2)
             ep = p['t2_40']
@@ -201,87 +208,217 @@ for i in range(85, len(dates)):
                 pos.remove(p)
                 continue
 
+    # --- A2. Manage Open Positions: ALL-SIGNALS PAPER PORTFOLIO (Same Exit Rules) ---
+    for p in all_pos[:]:
+        tk = p['tk']
+        dt = d[tk]
+        if cd not in dt.index or pd.isna(dt.loc[cd, 'Close']):
+            continue
+        hist = dt.loc[:cd].tail(25)
+        row = hist.iloc[-1]
+        lo = float(row['Low'])
+        hi = float(row['High'])
+        cl = float(row['Close'])
+        s10 = float(hist['Close'].tail(10).mean())
+        s20 = float(hist['Close'].tail(20).mean())
+        p['days'] += 1
+
+        if lo <= p['sl']:
+            ep = round(p['sl'], 2)
+            pnl = (ep - p['ep']) * p['sh']
+            all_realized_profit += pnl
+            all_trd.append({
+                'Portfolio_Tag': p['tag'], 'Status': 'CLOSED', 'Stock': tk.replace('.NS', ''),
+                'Exit_Reason': p['st_type'], 'Buy_Date': str(p['bd'])[:10], 'Sell_Date': str(cd)[:10],
+                'Days_Held': p['days'], 'Swing_Start': p['orig'], 'Entry_Px': round(p['ep'], 2),
+                'Exit_or_CMP': ep, 'Current_SL': p['sl'], 'Shares': p['sh'],
+                'Capital_Deployed': round(p['ep'] * p['sh'], 2), 'PnL_Rs': round(pnl, 2),
+                'PnL_%': round(((ep / p['ep']) - 1) * 100, 2)
+            })
+            all_pos.remove(p)
+            continue
+
+        cg = (hi / p['ep']) - 1
+        p['max_g'] = max(p['max_g'], cg)
+        move_from_start = (hi / p['orig']) - 1
+
+        if p['max_g'] >= 0.075 and not p['sm']:
+            p['sl'] = round(p['ep'] * 1.002, 2)
+            p['sm'] = True
+            p['st_type'] = 'BREAKEVEN_SL'
+
+        if hi >= p['t1_28'] and not p['scaled_28'] and p['sh'] >= 3:
+            sell_sh = max(1, p['sh'] // 3)
+            ep = p['t1_28']
+            pnl = (ep - p['ep']) * sell_sh
+            all_realized_profit += pnl
+            p['sh'] -= sell_sh
+            p['scaled_28'] = True
+            p['sl'] = round(max(p['sl'], p['ep'] * 1.10), 2)
+            p['st_type'] = 'LOCK_+10%_SL'
+            all_trd.append({
+                'Portfolio_Tag': p['tag'], 'Status': 'PARTIAL_1', 'Stock': tk.replace('.NS', ''),
+                'Exit_Reason': 'SWING_28%_SCALE', 'Buy_Date': str(p['bd'])[:10], 'Sell_Date': str(cd)[:10],
+                'Days_Held': p['days'], 'Swing_Start': p['orig'], 'Entry_Px': round(p['ep'], 2),
+                'Exit_or_CMP': ep, 'Current_SL': p['sl'], 'Shares': sell_sh,
+                'Capital_Deployed': round(p['ep'] * sell_sh, 2), 'PnL_Rs': round(pnl, 2),
+                'PnL_%': round(((ep / p['ep']) - 1) * 100, 2)
+            })
+
+        if hi >= p['t2_40'] and not p['scaled_40'] and p['sh'] >= 2:
+            sell_sh = max(1, p['sh'] // 2)
+            ep = p['t2_40']
+            pnl = (ep - p['ep']) * sell_sh
+            all_realized_profit += pnl
+            p['sh'] -= sell_sh
+            p['scaled_40'] = True
+            p['sl'] = round(max(p['sl'], p['ep'] * 1.22, s10 * 0.985), 2)
+            p['st_type'] = '10SMA_EXT_SL'
+            all_trd.append({
+                'Portfolio_Tag': p['tag'], 'Status': 'PARTIAL_2', 'Stock': tk.replace('.NS', ''),
+                'Exit_Reason': 'EXTENDED_40%_SCALE', 'Buy_Date': str(p['bd'])[:10], 'Sell_Date': str(cd)[:10],
+                'Days_Held': p['days'], 'Swing_Start': p['orig'], 'Entry_Px': round(p['ep'], 2),
+                'Exit_or_CMP': ep, 'Current_SL': p['sl'], 'Shares': sell_sh,
+                'Capital_Deployed': round(p['ep'] * sell_sh, 2), 'PnL_Rs': round(pnl, 2),
+                'PnL_%': round(((ep / p['ep']) - 1) * 100, 2)
+            })
+
+        if hi >= p['t3_48']:
+            ep = p['t3_48']
+            pnl = (ep - p['ep']) * p['sh']
+            all_realized_profit += pnl
+            all_trd.append({
+                'Portfolio_Tag': p['tag'], 'Status': 'CLOSED', 'Stock': tk.replace('.NS', ''),
+                'Exit_Reason': 'SUPER_EXT_48%', 'Buy_Date': str(p['bd'])[:10], 'Sell_Date': str(cd)[:10],
+                'Days_Held': p['days'], 'Swing_Start': p['orig'], 'Entry_Px': round(p['ep'], 2),
+                'Exit_or_CMP': ep, 'Current_SL': p['sl'], 'Shares': p['sh'],
+                'Capital_Deployed': round(p['ep'] * p['sh'], 2), 'PnL_Rs': round(pnl, 2),
+                'PnL_%': round(((ep / p['ep']) - 1) * 100, 2)
+            })
+            all_pos.remove(p)
+            continue
+
+        if p['days'] >= 4 and ((move_from_start >= 0.35 or p['scaled_40']) or (mkt_weak and cl > p['ep'] * 1.05)):
+            if cl < s10 * 0.99 and s10 > p['ep']:
+                ep = round(max(cl, p['sl']), 2)
+                pnl = (ep - p['ep']) * p['sh']
+                all_realized_profit += pnl
+                reason = 'WEAK_MKT_10SMA_EXIT' if mkt_weak else '10SMA_TRAIL_EXIT'
+                all_trd.append({
+                    'Portfolio_Tag': p['tag'], 'Status': 'CLOSED', 'Stock': tk.replace('.NS', ''),
+                    'Exit_Reason': reason, 'Buy_Date': str(p['bd'])[:10], 'Sell_Date': str(cd)[:10],
+                    'Days_Held': p['days'], 'Swing_Start': p['orig'], 'Entry_Px': round(p['ep'], 2),
+                    'Exit_or_CMP': ep, 'Current_SL': p['sl'], 'Shares': p['sh'],
+                    'Capital_Deployed': round(p['ep'] * p['sh'], 2), 'PnL_Rs': round(pnl, 2),
+                    'PnL_%': round(((ep / p['ep']) - 1) * 100, 2)
+                })
+                all_pos.remove(p)
+                continue
+
+        if p['days'] >= 5 and s20 > p['ep'] * 1.005:
+            hard_20sl = round(s20 * 0.975, 2)
+            if hard_20sl > p['sl']:
+                p['sl'] = hard_20sl
+                p['st_type'] = '20SMA_HARD_SL'
+            if cl < s20 * 0.985:
+                ep = round(max(cl, p['sl']), 2)
+                pnl = (ep - p['ep']) * p['sh']
+                all_realized_profit += pnl
+                all_trd.append({
+                    'Portfolio_Tag': p['tag'], 'Status': 'CLOSED', 'Stock': tk.replace('.NS', ''),
+                    'Exit_Reason': '20SMA_CLOSE_TRAIL', 'Buy_Date': str(p['bd'])[:10], 'Sell_Date': str(cd)[:10],
+                    'Days_Held': p['days'], 'Swing_Start': p['orig'], 'Entry_Px': round(p['ep'], 2),
+                    'Exit_or_CMP': ep, 'Current_SL': p['sl'], 'Shares': p['sh'],
+                    'Capital_Deployed': round(p['ep'] * p['sh'], 2), 'PnL_Rs': round(pnl, 2),
+                    'PnL_%': round(((ep / p['ep']) - 1) * 100, 2)
+                })
+                all_pos.remove(p)
+                continue
+
     # --- B. Daily Entry Scan (Rule 1, 2, 3 & 7 - Fixed 20-SMA Base Math!) ---
+    # Collects ALL valid triggered signals across the universe every day
+    raw_day_cands = []
+    for tk in tickers:
+        try:
+            dt = d[tk].loc[:cd].dropna()
+            if len(dt) < 85 or dt.index[-1] != cd:
+                continue
+            hist = dt.tail(85)
+            cp = hist['Close']; vols = hist['Volume']; hi_s = hist['High']; lo_s = hist['Low']; op_s = hist['Open']
+            prev_c = float(cp.iloc[-2]); cc = float(cp.iloc[-1]); v20 = float(vols.iloc[-21:-1].mean())
+            if prev_c < 30 or prev_c > 4500 or v20 < 200000:
+                continue
+
+            # Rule 1a: Strong Preceding Uptrend (>=30% rally in last 3-4 months + >=2 Purple Dots)
+            r3m = (float(hi_s.iloc[-45:-1].max()) / float(lo_s.iloc[:-15].min())) - 1
+            if r3m < 0.30:
+                continue
+            rets = cp.iloc[:-1].pct_change(); v_prev = vols.iloc[:-1]; h_prev = hi_s.iloc[:-1]
+            green_dots = int(((rets >= 0.048) & ((v_prev >= 500000) | (v_prev >= v20 * 2.0))).sum())
+            if green_dots < 2:
+                continue
+
+            # Rule 1b: Controlled Correction (<=25% from peak) & Clean Pullback
+            peak_px = float(h_prev.tail(45).max())
+            dd = 1 - (prev_c / peak_px)
+            if dd > 0.25 or dd < 0.02:
+                continue
+            red_mask = (rets.tail(15) <= -0.048) & (v_prev.tail(15) >= max(500000, v20 * 1.8))
+            if red_mask.any() and prev_c < float(h_prev.tail(15)[red_mask].max()):
+                continue
+
+            # Rule 1c & Rule 2 (FIXED): Reclaiming/Hugging 20-SMA in an Uptrend
+            s10 = float(cp.iloc[-11:-1].mean())
+            s20 = float(cp.iloc[-21:-1].mean())
+            s20_20d_ago = float(cp.iloc[-41:-21].mean())
+            s50 = float(cp.iloc[-51:-1].mean())
+            dist_20 = (prev_c - s20) / s20
+            if not (-0.025 <= dist_20 <= 0.050 and s20 >= s50 * 0.99 and s20 > s20_20d_ago):
+                continue
+
+            # Rule 1d (FIXED): Bar-by-Bar Contraction compared to 25-day base swings + Zero 5-Day Pre-Rally
+            five_day_chg = ((prev_c / float(cp.iloc[-7])) - 1) * 100
+            bar_ranges_25 = ((hi_s.iloc[-26:-1] - lo_s.iloc[-26:-1]) / cp.iloc[-26:-1]) * 100
+            max_25d_bar = float(bar_ranges_25.max())
+            rng_yest = float(bar_ranges_25.iloc[-1])
+            rng_2d = float(bar_ranges_25.tail(2).mean())
+            inside_bar = (float(hi_s.iloc[-2]) <= float(hi_s.iloc[-3])) and (float(lo_s.iloc[-2]) >= float(lo_s.iloc[-3]))
+            bar_contracted = (rng_yest <= 3.2 and rng_2d <= 3.5) and (rng_yest <= max_25d_bar * 0.50 or inside_bar)
+            h_lows = float(lo_s.iloc[-2]) >= float(lo_s.iloc[-8:-2].min())
+            v_dry = float(vols.iloc[-2]) <= v20 * 0.95
+            if not (-5.0 <= five_day_chg <= 4.5 and bar_contracted and h_lows and v_dry):
+                continue
+
+            # Rule 3: Strong Start Entry Method (Gap-Up > Prev Close + High Volume + Cross Prev Day High)
+            prev_hi = round(float(hi_s.iloc[-2]) * 1.001, 2)
+            td_op = float(op_s.iloc[-1]); td_hi = float(hi_s.iloc[-1]); td_lo = float(lo_s.iloc[-1])
+            gap_up_start = (td_op >= prev_c * 0.999) and (td_op <= prev_hi * 1.025)
+            strong_vol_brk = (td_hi > prev_hi) and (cc > prev_hi) and (float(vols.iloc[-1]) >= v20 * 1.30)
+            if gap_up_start and strong_vol_brk:
+                ep_px = max(prev_hi, round(td_op, 2))
+                sl_px = round(max(min(td_lo, float(lo_s.iloc[-2])) * 0.996, ep_px * 0.962), 2)
+                if td_lo <= sl_px:
+                    continue
+                risk_pct = (ep_px - sl_px) / ep_px
+                if 0.010 <= risk_pct <= 0.042:
+                    swing_start_low = round(float(lo_s.iloc[-10:-1].min()), 2)
+                    score = (green_dots * 25) + (r3m * 50) - (rng_2d * 15)
+                    raw_day_cands.append((score, tk, ep_px, sl_px, swing_start_low))
+        except Exception:
+            continue
+
+    raw_day_cands.sort(key=lambda x: x[0], reverse=True)
+    main_taken_today = set()
+
+# B1. Execute Main Portfolio Entries (Exact same filters, slot limit=4, cash & cooldown rules)
     if len(pos) < 4 and cash > 6000 and i >= pause_until_idx:
-        day_cands = []
-        for tk in tickers:
+        for score, tk, ep, sl, sw_start in raw_day_cands:
+            if len(pos) >= 4 or cash < 6000:
+                break
             if any(p['tk'] == tk for p in pos):
                 continue
             if tk in cooldown and (i - cooldown[tk]) < 15:
                 continue
-            try:
-                dt = d[tk].loc[:cd].dropna()
-                if len(dt) < 85 or dt.index[-1] != cd:
-                    continue
-                hist = dt.tail(85)
-                cp = hist['Close']; vols = hist['Volume']; hi_s = hist['High']; lo_s = hist['Low']; op_s = hist['Open']
-                prev_c = float(cp.iloc[-2]); cc = float(cp.iloc[-1]); v20 = float(vols.iloc[-21:-1].mean())
-                if prev_c < 30 or prev_c > 4500 or v20 < 200000:
-                    continue
-
-                # Rule 1a: Strong Preceding Uptrend (>=30% rally in last 3-4 months + >=2 Purple Dots)
-                r3m = (float(hi_s.iloc[-45:-1].max()) / float(lo_s.iloc[:-15].min())) - 1
-                if r3m < 0.30:
-                    continue
-                rets = cp.iloc[:-1].pct_change(); v_prev = vols.iloc[:-1]; h_prev = hi_s.iloc[:-1]
-                green_dots = int(((rets >= 0.048) & ((v_prev >= 500000) | (v_prev >= v20 * 2.0))).sum())
-                if green_dots < 2:
-                    continue
-
-                # Rule 1b: Controlled Correction (<=25% from peak) & Clean Pullback
-                peak_px = float(h_prev.tail(45).max())
-                dd = 1 - (prev_c / peak_px)
-                if dd > 0.25 or dd < 0.02:
-                    continue
-                red_mask = (rets.tail(15) <= -0.048) & (v_prev.tail(15) >= max(500000, v20 * 1.8))
-                if red_mask.any() and prev_c < float(h_prev.tail(15)[red_mask].max()):
-                    continue
-
-                # Rule 1c & Rule 2 (FIXED): Reclaiming/Hugging 20-SMA in an Uptrend (20-SMA >= 50-SMA & higher than 20 days ago)
-                # Blocks stocks already extended >5% above 20-SMA (like CYIENT & PVRINOX) without the 5-day lag paradox!
-                s10 = float(cp.iloc[-11:-1].mean())
-                s20 = float(cp.iloc[-21:-1].mean())
-                s20_20d_ago = float(cp.iloc[-41:-21].mean())
-                s50 = float(cp.iloc[-51:-1].mean())
-                dist_20 = (prev_c - s20) / s20
-                if not (-0.025 <= dist_20 <= 0.050 and s20 >= s50 * 0.99 and s20 > s20_20d_ago):
-                    continue
-
-                # Rule 1d (FIXED): Bar-by-Bar Contraction compared to 25-day base swings + Zero 5-Day Pre-Rally
-                five_day_chg = ((prev_c / float(cp.iloc[-7])) - 1) * 100
-                bar_ranges_25 = ((hi_s.iloc[-26:-1] - lo_s.iloc[-26:-1]) / cp.iloc[-26:-1]) * 100
-                max_25d_bar = float(bar_ranges_25.max())
-                rng_yest = float(bar_ranges_25.iloc[-1])
-                rng_2d = float(bar_ranges_25.tail(2).mean())
-                inside_bar = (float(hi_s.iloc[-2]) <= float(hi_s.iloc[-3])) and (float(lo_s.iloc[-2]) >= float(lo_s.iloc[-3]))
-                bar_contracted = (rng_yest <= 3.2 and rng_2d <= 3.5) and (rng_yest <= max_25d_bar * 0.50 or inside_bar)
-                h_lows = float(lo_s.iloc[-2]) >= float(lo_s.iloc[-8:-2].min())
-                v_dry = float(vols.iloc[-2]) <= v20 * 0.95
-                if not (-5.0 <= five_day_chg <= 4.5 and bar_contracted and h_lows and v_dry):
-                    continue
-
-                # Rule 3: Strong Start Entry Method (Gap-Up > Prev Close + High Volume + Cross Prev Day High)
-                prev_hi = round(float(hi_s.iloc[-2]) * 1.001, 2)
-                td_op = float(op_s.iloc[-1]); td_hi = float(hi_s.iloc[-1]); td_lo = float(lo_s.iloc[-1])
-                gap_up_start = (td_op >= prev_c * 0.999) and (td_op <= prev_hi * 1.025)
-                strong_vol_brk = (td_hi > prev_hi) and (cc > prev_hi) and (float(vols.iloc[-1]) >= v20 * 1.30)
-                if gap_up_start and strong_vol_brk:
-                    ep_px = max(prev_hi, round(td_op, 2))
-                    sl_px = round(max(min(td_lo, float(lo_s.iloc[-2])) * 0.996, ep_px * 0.962), 2)
-                    if td_lo <= sl_px:
-                        continue
-                    risk_pct = (ep_px - sl_px) / ep_px
-                    if 0.010 <= risk_pct <= 0.042:
-                        swing_start_low = round(float(lo_s.iloc[-10:-1].min()), 2)
-                        score = (green_dots * 25) + (r3m * 50) - (rng_2d * 15)
-                        day_cands.append((score, tk, ep_px, sl_px, swing_start_low))
-            except Exception:
-                continue
-
-        day_cands.sort(key=lambda x: x[0], reverse=True)
-        for score, tk, ep, sl, sw_start in day_cands:
-            if len(pos) >= 4 or cash < 6000:
-                break
             rps = ep - sl
             op_val_now = sum([p['sh'] * float(d[p['tk']].loc[cd, 'Close']) for p in pos if cd in d[p['tk']].index and not pd.isna(d[p['tk']].loc[cd, 'Close'])])
             tot_eq = cash + op_val_now
@@ -291,12 +428,32 @@ for i in range(85, len(dates)):
             if sh <= 0 or sh * ep > cash:
                 continue
             cash -= sh * ep
+            main_taken_today.add(tk)
             pos.append({
                 'tk': tk, 'bd': cd, 'orig': sw_start, 'ep': ep, 'sh': sh, 'sl': sl,
                 't1_28': round(sw_start * 1.28, 2), 't2_40': round(sw_start * 1.40, 2), 't3_48': round(sw_start * 1.48, 2),
                 'sm': False, 'scaled_28': False, 'scaled_40': False, 'days': 0,
                 'max_g': (float(d[tk].loc[cd, 'High']) / ep) - 1, 'st_type': 'LOD_INIT_SL'
             })
+
+    # B2. Execute Paper Trades on ALL Signals (Tags Main vs Extra-Only Signals)
+    op_val_ref = sum([p['sh'] * float(d[p['tk']].loc[cd, 'Close']) for p in pos if cd in d[p['tk']].index and not pd.isna(d[p['tk']].loc[cd, 'Close'])])
+    ref_eq = cash + op_val_ref
+    for score, tk, ep, sl, sw_start in raw_day_cands:
+        # Skip if already holding an active paper position in this exact stock
+        if any(p['tk'] == tk for p in all_pos):
+            continue
+        rps = max(ep - sl, 0.05)
+        # Standardized ₹50k-equivalent unit sizing (2.5% risk / 35% cap) so Extra signals are apples-to-apples comparable
+        sh_paper = max(1, min(int((ref_eq * 0.025) / rps), int((ref_eq * 0.35) / ep)))
+        trade_tag = 'MAIN_PORTFOLIO' if tk in main_taken_today else 'EXTRA_SIGNAL_ONLY'
+        all_pos.append({
+            'tk': tk, 'bd': cd, 'orig': sw_start, 'ep': ep, 'sh': sh_paper, 'sl': sl,
+            't1_28': round(sw_start * 1.28, 2), 't2_40': round(sw_start * 1.40, 2), 't3_48': round(sw_start * 1.48, 2),
+            'sm': False, 'scaled_28': False, 'scaled_40': False, 'days': 0,
+            'max_g': (float(d[tk].loc[cd, 'High']) / ep) - 1, 'st_type': 'LOD_INIT_SL',
+            'tag': trade_tag
+        })
 
     op_val = sum([p['sh'] * float(d[p['tk']].loc[cd, 'Close']) for p in pos if cd in d[p['tk']].index and not pd.isna(d[p['tk']].loc[cd, 'Close'])])
     tot_eq = round(cash + op_val, 2)
@@ -308,7 +465,7 @@ for i in range(85, len(dates)):
         'Net_Return_%': round(((tot_eq / INITIAL_CAPITAL) - 1) * 100, 2), 'Open_Trades_Count': len(pos)
     })
 
-# 3. Save Live Trade Log (trade_log.csv)
+# 3. Save Live Trade Log (trade_log.csv) - MAIN PORTFOLIO (UNCHANGED)
 open_rows = []
 for p in pos:
     curr_px = round(float(d[p['tk']].dropna()['Close'].iloc[-1]), 2)
@@ -330,7 +487,29 @@ else:
         'Swing_Start', 'Entry_Px', 'Exit_or_CMP', 'Current_SL', 'Shares', 'PnL_Rs', 'PnL_%'
     ]).to_csv('trade_log.csv', index=False)
 
-# 4. Save Live Portfolio Summary (portfolio_summary.csv)
+# 3B. Save All-Signals Paper Trade Log (all_signals_paper_trades.csv)
+all_open_rows = []
+for p in all_pos:
+    curr_px = round(float(d[p['tk']].dropna()['Close'].iloc[-1]), 2)
+    unrl_pnl = round((curr_px - p['ep']) * p['sh'], 2)
+    unrl_pct = round(((curr_px / p['ep']) - 1) * 100, 2)
+    all_open_rows.append({
+        'Portfolio_Tag': p['tag'], 'Status': 'OPEN_ACTIVE', 'Stock': p['tk'].replace('.NS', ''),
+        'Exit_Reason': f"ACTIVE ({p['st_type']})", 'Buy_Date': str(p['bd'])[:10], 'Sell_Date': 'HOLDING',
+        'Days_Held': p['days'], 'Swing_Start': p['orig'], 'Entry_Px': round(p['ep'], 2),
+        'Exit_or_CMP': curr_px, 'Current_SL': p['sl'], 'Shares': p['sh'],
+        'Capital_Deployed': round(p['ep'] * p['sh'], 2), 'PnL_Rs': unrl_pnl, 'PnL_%': unrl_pct
+    })
+
+combined_all_signals_rows = all_open_rows + all_trd[::-1]
+all_signals_cols = [
+    'Portfolio_Tag', 'Status', 'Stock', 'Exit_Reason', 'Buy_Date', 'Sell_Date', 'Days_Held',
+    'Swing_Start', 'Entry_Px', 'Exit_or_CMP', 'Current_SL', 'Shares', 'Capital_Deployed', 'PnL_Rs', 'PnL_%'
+]
+all_signals_df = pd.DataFrame(combined_all_signals_rows) if combined_all_signals_rows else pd.DataFrame(columns=all_signals_cols)
+all_signals_df.to_csv('all_signals_paper_trades.csv', index=False)
+
+# 4. Save Live Portfolio Summary (portfolio_summary.csv) - MAIN PORTFOLIO (UNCHANGED)
 eq_df = pd.DataFrame(eq)
 closed_df = pd.DataFrame(trd)
 win_rate = round((len(closed_df[closed_df['PnL_Rs'] >= 0]) / len(closed_df)) * 100, 1) if not closed_df.empty else 0.0
@@ -349,6 +528,36 @@ summary_row = pd.DataFrame([{
 }])
 summary_row.to_csv('portfolio_summary.csv', index=False)
 
+# 4B. Save All-Signals & Extra-Only Portfolio Summary (all_signals_portfolio_summary.csv)
+all_closed_df = pd.DataFrame(all_trd)
+extra_closed_df = all_closed_df[all_closed_df['Portfolio_Tag'] == 'EXTRA_SIGNAL_ONLY'] if not all_closed_df.empty else pd.DataFrame()
+extra_open_df = pd.DataFrame([r for r in all_open_rows if r['Portfolio_Tag'] == 'EXTRA_SIGNAL_ONLY'])
+
+all_win_rate = round((len(all_closed_df[all_closed_df['PnL_Rs'] >= 0]) / len(all_closed_df)) * 100, 1) if not all_closed_df.empty else 0.0
+extra_win_rate = round((len(extra_closed_df[extra_closed_df['PnL_Rs'] >= 0]) / len(extra_closed_df)) * 100, 1) if not extra_closed_df.empty else 0.0
+
+all_unrl = round(sum(r['PnL_Rs'] for r in all_open_rows), 2)
+extra_realized = round(extra_closed_df['PnL_Rs'].sum(), 2) if not extra_closed_df.empty else 0.0
+extra_unrl = round(extra_open_df['PnL_Rs'].sum(), 2) if not extra_open_df.empty else 0.0
+
+all_signals_summary = pd.DataFrame([{
+    'Last_Updated': datetime.now().strftime('%Y-%m-%d'),
+    'Live_Start_Date': LIVE_START_DATE,
+    'Market_Regime': mkt_regime_now,
+    'Total_All_Signals_Closed': len(all_closed_df),
+    'All_Signals_Win_Rate_%': all_win_rate,
+    'All_Signals_Realized_PnL_Rs': round(all_realized_profit, 2),
+    'All_Signals_Unrealized_PnL_Rs': all_unrl,
+    'All_Signals_Net_PnL_Rs': round(all_realized_profit + all_unrl, 2),
+    'All_Signals_Active_Open': len(all_open_rows),
+    'Extra_Only_Closed_Trades': len(extra_closed_df),
+    'Extra_Only_Win_Rate_%': extra_win_rate,
+    'Extra_Only_Realized_PnL_Rs': extra_realized,
+    'Extra_Only_Unrealized_PnL_Rs': extra_unrl,
+    'Extra_Only_Net_PnL_Rs': round(extra_realized + extra_unrl, 2),
+    'Extra_Only_Active_Open': len(extra_open_df)
+}])
+all_signals_summary.to_csv('all_signals_portfolio_summary.csv', index=False)
 # 5. Evening Watchlist Scanner (Fixed 20-SMA Base Math & 25-Day Bar Contraction)
 candidates = []
 today_str = datetime.now().strftime('%Y-%m-%d')
@@ -386,7 +595,6 @@ for tk in tickers:
             continue
 
         # 3. Reclaiming / Hugging 20-SMA in an Uptrend (Fixed 20-SMA Base Math!)
-        # Blocks stocks that already ran >5.0% above 20-SMA or >4.5% in the last 5 days!
         dist_20sma = round(((cc / s20) - 1) * 100, 1)
         five_day_chg = round(((cc / float(cp.iloc[-6])) - 1) * 100, 1)
         if not (-2.5 <= dist_20sma <= 5.0 and s20 >= s50 * 0.99 and s20 > s20_20d_ago and -5.0 <= five_day_chg <= 4.5):
@@ -427,20 +635,39 @@ for tk in tickers:
     except Exception:
         continue
 
+watchlist_cols = [
+    'Scan_Date', 'Tier', 'Stock', 'CMP', 'Purple_Dots', 'Pullback%', 'Dist_20SMA%',
+    '5D_Chg%', 'Max_25D_Bar%', 'Today_Bar%', 'Inside_Bar', 'Vol_x20D',
+    'GapUp_Above_Close', 'Buy_Stop_High', 'LOD_SL', 'SL_%', 'BE_At_+7.5%',
+    'Scale1_28%_Start', 'Scale2_40%_Start', 'Max_48%_Start', 'Qty_50k', 'Capital_Req'
+]
+
 cdf = pd.DataFrame(candidates)
 if not cdf.empty:
     cdf = cdf.sort_values(by=['Tier', 'Today_Bar%', 'Dist_20SMA%'], ascending=[True, True, True]).head(15)
     cdf.to_csv('best_stocks.csv', index=False)
-else:
-    pd.DataFrame(columns=[
-        'Scan_Date', 'Tier', 'Stock', 'CMP', 'Purple_Dots', 'Pullback%', 'Dist_20SMA%',
-        '5D_Chg%', 'Max_25D_Bar%', 'Today_Bar%', 'Inside_Bar', 'Vol_x20D',
-        'GapUp_Above_Close', 'Buy_Stop_High', 'LOD_SL', 'SL_%', 'BE_At_+7.5%',
-        'Scale1_28%_Start', 'Scale2_40%_Start', 'Max_48%_Start', 'Qty_50k', 'Capital_Req'
-    ]).to_csv('best_stocks.csv', index=False)
 
-print("\n=== PORTFOLIO SUMMARY ===")
+    # 5B. Preserve All Daily Watchlist Signals in Historical Archive CSV (all_daily_signals.csv)
+    archive_file = 'all_daily_signals.csv'
+    if os.path.exists(archive_file):
+        try:
+            old_archive = pd.read_csv(archive_file)
+            combined_archive = pd.concat([old_archive, cdf], ignore_index=True)
+            combined_archive = combined_archive.drop_duplicates(subset=['Scan_Date', 'Stock'], keep='last')
+        except Exception:
+            combined_archive = cdf.copy()
+    else:
+        combined_archive = cdf.copy()
+    combined_archive.to_csv(archive_file, index=False)
+else:
+    pd.DataFrame(columns=watchlist_cols).to_csv('best_stocks.csv', index=False)
+    if not os.path.exists('all_daily_signals.csv'):
+        pd.DataFrame(columns=watchlist_cols).to_csv('all_daily_signals.csv', index=False)
+
+print("\n=== MAIN PORTFOLIO SUMMARY (UNCHANGED) ===")
 print(summary_row.to_string(index=False))
+print("\n=== ALL-SIGNALS & EXTRA-ONLY PAPER PORTFOLIO SUMMARY ===")
+print(all_signals_summary.to_string(index=False))
 print("\n=== EVENING WATCHLIST: RECLAIMED 20-SMA + BAR-BY-BAR CONTRACTION ===")
 if not cdf.empty:
     print(cdf.to_string(index=False))
