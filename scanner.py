@@ -1,4 +1,5 @@
 import os
+import time
 import urllib.request
 import pandas as pd
 import numpy as np
@@ -11,21 +12,73 @@ print("Running Manas Arora VCP System (Fixed 20-SMA Base Math + All 7 Video Rule
 LIVE_START_DATE = "2026-10-16"
 INITIAL_CAPITAL = 50000.0
 
+# Fallback NSE Midcap/Smallcap/Microcap universe if NSE blocks runner requests
+FALLBACK_SYMBOLS = [
+    "AARTIPHARM", "ABCAPITAL", "ACC", "ADANIENSOL", "ADANIGREEN", "AFFLE", "AJANTPHARM",
+    "ALKEM", "AMBER", "ANGELONE", "APLAPOLLO", "APOLLOTYRE", "ASHOKLEY", "ASTRAL", "ATUL",
+    "AUBANK", "AUROPHARMA", "BALKRISIND", "BANDHANBNK", "BANKINDIA", "BATAINDIA", "BDL",
+    "BEL", "BHARATFORG", "BHEL", "BIOCON", "BIRLACORPN", "BLUESTARCO", "BLUSPRING",
+    "BSOFT", "CANBK", "CDSL", "CGPOWER", "CHAMBLFERT", "CHOLAFIN", "COFORGE", "COLPAL",
+    "CONCOR", "CROMPTON", "CUMMINSIND", "CYIENT", "DABUR", "DALBHARAT", "DEEPAKNTR",
+    "DELHIVERY", "DEVYANI", "DIXON", "ESCORTS", "EXIDEIND", "FEDERALBNK", "FORTIS",
+    "GAIL", "GCSL", "GLENMARK", "GMRINFRA", "GODREJPROP", "GRANULES", "GRAPHITE", "GRASIM",
+    "GUJGASLTD", "HAL", "HAVELLS", "HCLTECH", "HDFCAMC", "HEG", "HFCL", "HINDALCO",
+    "HINDCOPPER", "HINDPETRO", "HUDCO", "ICICIGI", "IDFCFIRSTB", "IEX", "IGL", "IIFL",
+    "INDHOTEL", "INDIAMART", "INDIANB", "INDIGO", "INDUSTOWER", "IOC", "IPCALAB", "IRCTC",
+    "IREDA", "IRFC", "ISEC", "JBCHEPHARM", "JINDALSTEL", "JKCEMENT", "JSL", "JSWENERGY",
+    "JUBLFOOD", "KALYANKJIL", "KEI", "KPITTECH", "KRISHANA", "KROSS", "LALPATHLAB",
+    "LAURUSLABS", "LICHSGFIN", "LTTS", "LUPIN", "MAFANG", "MANAPPURAM", "MAXHEALTH",
+    "MCX", "METROPOLIS", "MFSL", "MGL", "MOTHERSON", "MPHASIS", "MRF", "NATIONALUM",
+    "NAUKRI", "NAVINFLUOR", "NBCC", "NCC", "NHPC", "NMDC", "OBEROIRLTY", "OFSS", "OIL",
+    "PAYTM", "PERSISTENT", "PETRONET", "PFC", "PHOENIXLTD", "PIDILITIND", "PIIND", "PNB",
+    "POLICYBZR", "POLYCAB", "POONAWALLA", "PRESTIGE", "PVRINOX", "RADICO", "RAIN",
+    "RATNAMANI", "RATNAVEER", "RAYMOND", "RBLBANK", "RECLTD", "RVNL", "SAIL", "SAMBHV",
+    "SBC", "SBICARD", "SHYAMMETL", "SJVN", "SKYGOLD", "SOLARINDS", "SONACOMS", "SRF",
+    "STARHEALTH", "SUNTV", "SUPREMEIND", "SUZLON", "SYNGENE", "TATACHEM", "TATACOMM",
+    "TATAELXSI", "TATAPOWER", "TATASTEEL", "TATATECH", "TFCILTD", "THERMAX", "TITAN",
+    "TORNTPHARM", "TRENT", "TRIDENT", "TIINDIA", "UBL", "UNIONBANK", "UNITEDPOLY", "UPL",
+    "UTTAMSUGAR", "VBL", "VEDL", "VOLTAS", "WHIRLPOOL", "WIPRO", "WSTCSTPAPR", "YESBANK",
+    "ZEEL", "ZENSARTECH", "ZOMATO", "ZYDUSLIFE"
+]
+
 # 1. Fetch NSE Midcap 150, Smallcap 250 & Microcap 250 Universe (~650 NSE Stocks)
-req = lambda u: urllib.request.Request(u, headers={'User-Agent': 'Mozilla/5.0'})
+headers = {
+    'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/124.0.0.0 Safari/537.36',
+    'Accept': 'text/csv,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8',
+    'Accept-Language': 'en-US,en;q=0.9',
+    'Referer': 'https://www.nseindia.com/',
+    'Connection': 'keep-alive'
+}
+
 symbols = []
 for url in [
     'https://nsearchives.nseindia.com/content/indices/ind_niftymidcap150list.csv',
     'https://nsearchives.nseindia.com/content/indices/ind_niftysmallcap250list.csv',
     'https://nsearchives.nseindia.com/content/indices/ind_niftymicrocap250_list.csv'
 ]:
-    try:
-        df_idx = pd.read_csv(urllib.request.urlopen(req(url)))
-        symbols.extend(df_idx['Symbol'].dropna().tolist())
-    except Exception:
+    fetched_ok = False
+    for attempt in range(2):
+        try:
+            req = urllib.request.Request(url, headers=headers)
+            with urllib.request.urlopen(req, timeout=15) as resp:
+                df_idx = pd.read_csv(resp)
+                if 'Symbol' in df_idx.columns:
+                    symbols.extend(df_idx['Symbol'].dropna().tolist())
+                    fetched_ok = True
+                    break
+        except Exception:
+            time.sleep(1.0)
+    if not fetched_ok:
         pass
 
+if not symbols:
+    print("Warning: Could not fetch live NSE CSV list (likely blocked on runner). Using fallback NSE universe.")
+    symbols = FALLBACK_SYMBOLS
+
 tickers = [x + '.NS' for x in sorted(list(set(symbols))) if 'DUMMY' not in str(x)]
+if not tickers:
+    tickers = [x + '.NS' for x in FALLBACK_SYMBOLS]
+
 print(f"Fetched {len(tickers)} NSE stocks. Downloading 1Y daily data...")
 d = yf.download(tickers, period='1y', interval='1d', group_by='ticker', auto_adjust=True, threads=True)
 dates = d.index
@@ -336,7 +389,6 @@ for i in range(85, len(dates)):
                 continue
 
     # --- B. Daily Entry Scan (Rule 1, 2, 3 & 7 - Fixed 20-SMA Base Math!) ---
-    # Collects ALL valid triggered signals across the universe every day
     raw_day_cands = []
     for tk in tickers:
         try:
@@ -358,7 +410,7 @@ for i in range(85, len(dates)):
             if green_dots < 2:
                 continue
 
-            # Rule 1b: Controlled Correction (<=25% from peak) & Clean Pullback
+                # Rule 1b: Controlled Correction (<=25% from peak) & Clean Pullback
             peak_px = float(h_prev.tail(45).max())
             dd = 1 - (prev_c / peak_px)
             if dd > 0.25 or dd < 0.02:
@@ -410,7 +462,7 @@ for i in range(85, len(dates)):
     raw_day_cands.sort(key=lambda x: x[0], reverse=True)
     main_taken_today = set()
 
-# B1. Execute Main Portfolio Entries (Exact same filters, slot limit=4, cash & cooldown rules)
+    # B1. Execute Main Portfolio Entries (Exact same filters, slot limit=4, cash & cooldown rules)
     if len(pos) < 4 and cash > 6000 and i >= pause_until_idx:
         for score, tk, ep, sl, sw_start in raw_day_cands:
             if len(pos) >= 4 or cash < 6000:
@@ -440,11 +492,9 @@ for i in range(85, len(dates)):
     op_val_ref = sum([p['sh'] * float(d[p['tk']].loc[cd, 'Close']) for p in pos if cd in d[p['tk']].index and not pd.isna(d[p['tk']].loc[cd, 'Close'])])
     ref_eq = cash + op_val_ref
     for score, tk, ep, sl, sw_start in raw_day_cands:
-        # Skip if already holding an active paper position in this exact stock
         if any(p['tk'] == tk for p in all_pos):
             continue
         rps = max(ep - sl, 0.05)
-        # Standardized ₹50k-equivalent unit sizing (2.5% risk / 35% cap) so Extra signals are apples-to-apples comparable
         sh_paper = max(1, min(int((ref_eq * 0.025) / rps), int((ref_eq * 0.35) / ep)))
         trade_tag = 'MAIN_PORTFOLIO' if tk in main_taken_today else 'EXTRA_SIGNAL_ONLY'
         all_pos.append({
@@ -558,6 +608,7 @@ all_signals_summary = pd.DataFrame([{
     'Extra_Only_Active_Open': len(extra_open_df)
 }])
 all_signals_summary.to_csv('all_signals_portfolio_summary.csv', index=False)
+
 # 5. Evening Watchlist Scanner (Fixed 20-SMA Base Math & 25-Day Bar Contraction)
 candidates = []
 today_str = datetime.now().strftime('%Y-%m-%d')
