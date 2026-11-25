@@ -35,3 +35,20 @@ jobs:
           git config --global user.email 'actions@github.com'
           git add best_stocks.csv trade_log.csv portfolio_summary.csv
           git diff --quiet && git diff --staged --quiet || (git commit -m "Daily VCP Watchlist, Trade Log & Portfolio Update [skip ci]" && git push)
+      - name: Commit and push updated CSVs
+        run: |
+          git config --local user.email "github-actions[bot]@users.noreply.github.com"
+          git config --local user.name "github-actions[bot]"
+          git add \
+            trade_log.csv \
+            portfolio_summary.csv \
+            best_stocks.csv \
+            all_daily_signals.csv \
+            all_signals_paper_trades.csv \
+            all_signals_portfolio_summary.csv
+          git commit -m "Update daily VCP signals and paper trade logs [skip ci]" || echo "No changes to commit"
+          git pull --rebase origin main || true
+          git push
+permissions:
+  contents: write
+  
